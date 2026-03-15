@@ -1,14 +1,11 @@
 import 'dart:io';
 import 'package:dangi_doctor/ai/knowledge/ai_providers.dart';
-
-import '../lib/generator/test_generator.dart';
-import '../lib/crawler/app_launcher.dart';
-import '../lib/crawler/screen_crawler.dart';
-import '../lib/crawler/vm_locator.dart';
-import '../lib/crawler/interaction_engine.dart';
-import '../lib/analysis/tree_analyser.dart';
-import '../lib/analysis/performance.dart';
-import '../lib/ai/claude_client.dart';
+import 'package:dangi_doctor/crawler/screen_navigator.dart';
+import 'package:dangi_doctor/crawler/app_launcher.dart';
+import 'package:dangi_doctor/crawler/screen_crawler.dart';
+import 'package:dangi_doctor/crawler/vm_locator.dart';
+import 'package:dangi_doctor/generator/test_generator.dart';
+import 'package:dangi_doctor/report/html_report.dart';
 
 void main() async {
   print('');
@@ -30,12 +27,14 @@ void main() async {
 
   final projectPath = Platform.environment['DANGI_PROJECT'] ??
       '/Users/abhishek/Desktop/reflex-flutter';
+  final deviceId = Platform.environment['DANGI_DEVICE'] ?? 'Z5BISOCMHEP7FAXG';
   print('📁 Project: $projectPath\n');
 
+  // Step 1 — pick AI provider
   final provider = await AiProviderDetector.detect();
   if (provider == null) print('⚡ Crawler-only mode — no AI diagnosis.\n');
 
-  // VM connection
+  // Step 2 — get VM service URL
   String? wsUrl = await VmServiceLocator.discover(projectPath: projectPath);
   AppLauncher? launcher;
 
@@ -62,150 +61,90 @@ void main() async {
     }
   }
 
-  if (wsUrl == null || wsUrl.isEmpty) {
+  if (wsUrl.isEmpty) {
     print('❌ No VM service URL. Exiting.');
     exit(1);
   }
 
   final crawler = ScreenCrawler(projectPath: projectPath, wsUrl: wsUrl);
-  final analyser = TreeAnalyser();
 
   try {
     await crawler.connect();
 
-    // ── Wait for splash screen to dismiss ──
+    // Wait for splash screen to dismiss
     await crawler.waitForAppReady();
     print('');
 
-    // ── Capture widget tree ──
-    final tree = await crawler.captureWidgetTree();
-    print('✅ Widget tree captured\n');
-    analyser.analyse(tree);
-
-    // ── Baseline performance (2s idle) ──
-    print('⏱️  Capturing baseline performance...');
-    final perfCapture = PerformanceCapture(
+    // Full app navigation crawl
+    final navigator = ScreenNavigator(
       vmService: crawler.vmService,
       isolateId: crawler.isolateId,
-    );
-    final baselinePerf =
-        await perfCapture.captureWindow(screenName: 'Screen_baseline');
-
-    // ── AI-directed interaction testing ──
-    print('\n🎮 Planning AI-directed interactions...');
-    final engine = InteractionEngine(
-      vmService: crawler.vmService,
-      isolateId: crawler.isolateId,
-      deviceId: Platform.environment['DANGI_DEVICE'] ?? 'Z5BISOCMHEP7FAXG',
+      deviceId: deviceId,
+      maxScreens: 10,
     );
 
-    final planned = engine.planInteractions(tree);
+    final screens = await navigator.walkAllScreens();
+    navigator.printSummary();
 
-    if (planned.isEmpty) {
-      print('  ℹ️  No interactive widgets found on current screen.');
-      print('  Current screen may still be loading — try option 2 next time');
-      print('  and paste the URL after your app has fully loaded.\n');
-    } else {
-      print('  ${planned.length} interactions planned:');
-      for (final p in planned) {
-        final icon = p.type == InteractionType.skip
-            ? '⏭️ '
-            : p.type == InteractionType.scroll
-                ? '📜'
-                : p.type == InteractionType.typeText
-                    ? '⌨️ '
-                    : p.type == InteractionType.animate
-                        ? '🎬'
-                        : '👆';
-        final loc = p.file != null ? ' (${p.file}:${p.line})' : '';
-        print('  $icon ${p.widgetType}$loc');
+    // AI diagnosis per screen
+    if (provider != null) {
+      final aiClient = AiClient(provider: provider, projectPath: projectPath);
+      print('\n🤖 Running AI diagnosis on ${screens.length} screens...\n');
+
+      for (final screen in screens) {
+        print('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        print('🤖 ${screen.name}');
+        print('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+
+        final aiReport = await aiClient.diagnose(
+          issues: screen.issues
+              .map((i) => {
+                    'severity': i.severity,
+                    'type': i.type,
+                    'file': i.file,
+                    'line': i.line,
+                    'message': i.message,
+                  })
+              .toList(),
+          totalWidgets: screen.totalWidgets,
+          maxDepth: screen.maxDepth,
+          widgetCounts: {},
+          screenName: screen.name,
+          perfGrade: screen.performance?.grade ?? 'N/A',
+          avgBuildMs: screen.performance?.avgBuildMs ?? 0,
+          jankRate: screen.performance?.jankRate ?? 0,
+          jankyFrames: screen.performance?.jankyFrames ?? 0,
+          totalFrames: screen.performance?.totalFrames ?? 0,
+        );
+
+        print(aiReport);
+        print('');
       }
     }
 
-    final currentScreenName = _detectScreenName(tree);
-    final List<InteractionResult> interactionResults = planned.isNotEmpty
-        ? await engine.execute(planned, currentScreenName)
-        : <InteractionResult>[];
-
-    // ── Print reports ──
-    baselinePerf.printReport();
-    analyser.printSummary();
-
-    // ── AI diagnosis ──
-    if (provider != null) {
-      final aiClient = AiClient(
-        provider: provider,
-        projectPath: projectPath,
+    // Generate test scripts per screen
+    final generator = TestGenerator(projectPath: projectPath);
+    for (final screen in screens) {
+      await generator.generateAndSave(
+        screenName: screen.name,
+        widgetTree: screen.widgetTree,
+        interactionResults: [],
+        issues: screen.issues,
       );
-
-      final interactionReport =
-          planned.isNotEmpty ? engine.toReportSection(interactionResults) : '';
-
-      final aiReport = await aiClient.diagnose(
-        issues: analyser.issues
-            .map((i) => {
-                  'severity': i.severity,
-                  'type': i.type,
-                  'file': i.file,
-                  'line': i.line,
-                  'message': i.message,
-                })
-            .toList(),
-        totalWidgets: analyser.totalWidgets,
-        maxDepth: analyser.maxDepthFound,
-        widgetCounts: analyser.widgetCounts,
-        screenName: currentScreenName,
-        perfGrade: baselinePerf.grade,
-        avgBuildMs: baselinePerf.avgBuildMs,
-        jankRate: baselinePerf.jankRate,
-        jankyFrames: baselinePerf.jankyFrames,
-        totalFrames: baselinePerf.totalFrames,
-        interactionReport: interactionReport,
-      );
-
-      print('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      print('🤖 AI DIAGNOSIS — DANGI DOCTOR');
-      print('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-      print(aiReport);
-      print('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     }
 
-    // ── Generate test scripts ──
-    final generator = TestGenerator(projectPath: projectPath);
-    await generator.generateAndSave(
-      screenName: currentScreenName,
-      widgetTree: tree,
-      interactionResults: interactionResults,
-      issues: analyser.issues,
+    // Generate HTML health report
+    await HtmlReportGenerator.generate(
+      screens: screens,
+      knownRisks: generator.cachedAnalysis?.knownRisks ?? [],
+      projectPath: projectPath,
+      projectName: projectPath.split('/').last,
     );
   } catch (e) {
     print('❌ Error: $e');
+    print(StackTrace.current);
   } finally {
     await crawler.disconnect();
     await launcher?.dispose();
-  }
-}
-
-/// Extract the current screen name from the widget tree
-String _detectScreenName(Map<String, dynamic> tree) {
-  String screen = 'UnknownScreen';
-  _walkForScreenName(tree, (name) {
-    screen = name;
-  });
-  return screen;
-}
-
-void _walkForScreenName(dynamic node, void Function(String) onScreen) {
-  if (node == null) return;
-  final type = node['widgetRuntimeType']?.toString() ?? '';
-  if ((type.contains('Page') ||
-          type.contains('Screen') ||
-          type.contains('Widget')) &&
-      !type.startsWith('_') &&
-      type != 'Scaffold') {
-    onScreen(type);
-  }
-  for (final child in (node['children'] as List? ?? [])) {
-    _walkForScreenName(child, onScreen);
   }
 }

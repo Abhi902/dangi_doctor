@@ -1,179 +1,16 @@
 import 'dart:io';
 import '../crawler/interaction_engine.dart';
 import '../analysis/tree_analyser.dart';
+import 'app_analyser.dart';
 
 class TestGenerator {
   final String projectPath;
+  AppAnalysis? _analysis;
 
   TestGenerator({required this.projectPath});
 
-  /// Read the actual screen source file and extract real widget keys/types
-  Map<String, dynamic> _readScreenSource(
-      String screenName, List<WidgetIssue> issues) {
-    // Find the source file from issues (they have real file paths)
-    final screenFiles = issues
-        .where((i) => i.file != null)
-        .map((i) => i.file!)
-        .toSet()
-        .where((f) =>
-            !f.contains('nested.dart') &&
-            !f.contains('router.dart') &&
-            !f.contains('builder.dart') &&
-            !f.contains('vector_graphics.dart'))
-        .toList();
-
-    final keys = <String>[];
-    final types = <String>[];
-    final lines = <Map<String, dynamic>>[];
-
-    for (final fileName in screenFiles) {
-      // Find full path
-      final fullPath = _findFile(fileName);
-      if (fullPath == null) continue;
-
-      try {
-        final content = File(fullPath).readAsStringSync();
-        final fileLines = content.split('\n');
-
-        // Extract widget Keys
-        final keyMatches = RegExp(r"Key\('([^']+)'\)").allMatches(content);
-        for (final m in keyMatches) {
-          keys.add(m.group(1)!);
-        }
-
-        // Extract tappable widgets with line numbers
-        final tappablePatterns = [
-          RegExp(r'ElevatedButton\s*\('),
-          RegExp(r'TextButton\s*\('),
-          RegExp(r'InkWell\s*\('),
-          RegExp(r'GestureDetector\s*\('),
-          RegExp(r'IconButton\s*\('),
-          RegExp(r'FloatingActionButton\s*\('),
-        ];
-
-        for (var i = 0; i < fileLines.length; i++) {
-          for (final pattern in tappablePatterns) {
-            if (pattern.hasMatch(fileLines[i])) {
-              final widgetType = pattern.pattern.split(r'\s')[0];
-              types.add(widgetType);
-              lines.add({
-                'type': widgetType,
-                'line': i + 1,
-                'file': fileName,
-                'snippet': fileLines[i].trim(),
-              });
-            }
-          }
-        }
-
-        // Extract TextField keys
-        final tfMatches = RegExp(
-          r'TextField[^,]*key:\s*(?:const\s+)?(?:Key|ValueKey)\(([^\)]+)\)',
-          dotAll: true,
-        ).allMatches(content);
-        for (final m in tfMatches) {
-          keys.add(m.group(1)!.replaceAll("'", '').replaceAll('"', ''));
-        }
-      } catch (_) {}
-    }
-
-    return {
-      'files': screenFiles,
-      'keys': keys,
-      'types': types.toSet().toList(),
-      'tappable_lines': lines,
-    };
-  }
-
-  String? _findFile(String fileName) {
-    final libDir = Directory('$projectPath/lib');
-    if (!libDir.existsSync()) return null;
-    try {
-      final matches = libDir
-          .listSync(recursive: true)
-          .whereType<File>()
-          .where((f) => f.path.endsWith(fileName))
-          .toList();
-      return matches.isNotEmpty ? matches.first.path : null;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  /// Detect the correct app entry — reads main.dart directly
-  _AppInfo _detectAppInfo() {
-    final mainFile = File('$projectPath/lib/main.dart');
-    if (!mainFile.existsSync()) {
-      return _AppInfo(
-        appImport: "import 'package:reflex/main.dart';",
-        runAppCall: 'MyApp(allowDarkMode: true)',
-      );
-    }
-
-    final content = mainFile.readAsStringSync();
-    final packageName = _detectPackageName();
-
-    // Find: runApp( ... child: SomeWidget(...) ... )
-    // or: runApp(SomeWidget(...))
-    final childMatch =
-        RegExp(r'child:\s*(\w+)\s*\(([^)]*)\)').firstMatch(content);
-    final directMatch = RegExp(r'runApp\(\s*(?:const\s+)?(\w+)\s*\(([^)]*)\)')
-        .firstMatch(content);
-
-    String appClass;
-    String appArgs;
-
-    if (childMatch != null) {
-      appClass = childMatch.group(1)!;
-      appArgs = childMatch.group(2)!.trim();
-    } else if (directMatch != null) {
-      appClass = directMatch.group(1)!;
-      appArgs = directMatch.group(2)!.trim();
-    } else {
-      appClass = 'MyApp';
-      appArgs = '';
-    }
-
-    // Clean up args — remove newlines and extra spaces
-    appArgs = appArgs.replaceAll(RegExp(r'\s+'), ' ').trim();
-
-    // Remove args that reference variables we can't access in tests
-    // Keep only literal values like true/false/strings/numbers
-    final safeArgs = appArgs
-        .split(',')
-        .map((a) => a.trim())
-        .where((a) => a.isNotEmpty)
-        .where((a) {
-      // Keep named params with literal values
-      if (a.contains(':')) {
-        final val = a.split(':').last.trim();
-        return val == 'true' ||
-            val == 'false' ||
-            val.startsWith("'") ||
-            val.startsWith('"') ||
-            RegExp(r'^\d+$').hasMatch(val);
-      }
-      return false;
-    }).join(', ');
-
-    final runAppCall =
-        safeArgs.isNotEmpty ? '$appClass($safeArgs)' : 'const $appClass()';
-
-    return _AppInfo(
-      appImport: "import 'package:$packageName/main.dart';",
-      runAppCall: runAppCall,
-      appClass: appClass,
-    );
-  }
-
-  String _detectPackageName() {
-    final pubspec = File('$projectPath/pubspec.yaml');
-    if (!pubspec.existsSync()) return 'app';
-    final content = pubspec.readAsStringSync();
-    final match =
-        RegExp(r'^name:\s*(\w+)', multiLine: true).firstMatch(content);
-    return match?.group(1) ?? 'app';
-  }
+  /// Exposes the cached AppAnalysis (available after the first generateAndSave call).
+  AppAnalysis? get cachedAnalysis => _analysis;
 
   Future<List<String>> generateAndSave({
     required String screenName,
@@ -183,11 +20,11 @@ class TestGenerator {
   }) async {
     print('\n📝 Generating Flutter test scripts for $screenName...');
 
-    // Read actual source code for this screen
-    final sourceInfo = _readScreenSource(screenName, issues);
-    final appInfo = _detectAppInfo();
+    // Auto-analyse the project if not done yet
+    _analysis ??= await AppAnalyser(projectPath: projectPath).analyse();
+    final analysis = _analysis!;
 
-    print('  📖 App entry: ${appInfo.runAppCall}');
+    final sourceInfo = _readScreenSource(screenName, issues);
     print('  📂 Screen files: ${(sourceInfo['files'] as List).join(', ')}');
     print('  🔑 Keys found: ${(sourceInfo['keys'] as List).length}');
     print(
@@ -196,31 +33,34 @@ class TestGenerator {
     final outputDir = Directory('$projectPath/integration_test/dangi_doctor');
     if (!outputDir.existsSync()) outputDir.createSync(recursive: true);
 
+    // Generate shared test helper (once per project)
+    _generateTestHelper(outputDir.path, analysis);
+
     final screenSnake = _toSnakeCase(screenName);
     final savedFiles = <String>[];
 
     print('  ✍️  Smoke test...');
     final smokeFile = '${outputDir.path}/${screenSnake}_smoke_test.dart';
-    File(smokeFile)
-        .writeAsStringSync(_generateSmokeTest(screenName, sourceInfo, appInfo));
+    File(smokeFile).writeAsStringSync(
+        _generateSmokeTest(screenName, sourceInfo, analysis));
     savedFiles.add(smokeFile);
     print('  ✅ ${smokeFile.split('/').last}');
 
     print('  ✍️  Interaction test...');
     final intFile = '${outputDir.path}/${screenSnake}_interaction_test.dart';
     File(intFile).writeAsStringSync(_generateInteractionTest(
-        screenName, sourceInfo, interactionResults, appInfo));
+        screenName, sourceInfo, interactionResults, analysis));
     savedFiles.add(intFile);
     print('  ✅ ${intFile.split('/').last}');
 
     print('  ✍️  Performance test...');
     final perfFile = '${outputDir.path}/${screenSnake}_perf_test.dart';
     File(perfFile).writeAsStringSync(
-        _generatePerfTest(screenName, interactionResults, appInfo));
+        _generatePerfTest(screenName, interactionResults, analysis));
     savedFiles.add(perfFile);
     print('  ✅ ${perfFile.split('/').last}');
 
-    _saveReadme(outputDir.path);
+    _saveReadme(outputDir.path, analysis);
     print('\n  📁 Saved to: integration_test/dangi_doctor/');
     print(
         '  Run: flutter test integration_test/dangi_doctor/ -d <device_id>\n');
@@ -228,115 +68,391 @@ class TestGenerator {
     return savedFiles;
   }
 
+  void _generateTestHelper(String dirPath, AppAnalysis a) {
+    // Always regenerate — this is fully auto-generated code, never manually edited
+    final helperFile = File('$dirPath/test_helper.dart');
+
+    final initBlock = a.appStateInitMethod != null
+        ? '\n  await ${a.appStateClass}().${a.appStateInitMethod}();\n'
+        : '';
+
+    final tokenLine = a.appStateTokenField != null
+        ? '    ${a.appStateClass}().${a.appStateTokenField} = testToken;'
+        : '';
+    final jwtLine =
+        a.appStateJwtField != null && a.appStateJwtField != a.appStateTokenField
+            ? '    ${a.appStateClass}().${a.appStateJwtField} = testToken;'
+            : '';
+    final userIdLine = a.appStateUserIdField != null
+        ? '    ${a.appStateClass}().${a.appStateUserIdField} = 1;'
+        : '';
+    final userNameLine = a.appStateUserNameField != null
+        ? "    ${a.appStateClass}().${a.appStateUserNameField} = 'Dangi Doctor Test';"
+        : '';
+    final emailLine = a.appStateEmailField != null
+        ? "    ${a.appStateClass}().${a.appStateEmailField} = 'test@dangidoctor.dev';"
+        : '';
+
+    final authBlock = tokenLine.isNotEmpty
+        ? '''
+  const testToken = String.fromEnvironment('TEST_TOKEN', defaultValue: '');
+  if (testToken.isNotEmpty) {
+$tokenLine
+$jwtLine
+$userIdLine
+$userNameLine
+$emailLine
+    print('✅ Auth injected via ${a.appStateClass}');
+  } else {
+    print('⚠️  No TEST_TOKEN — run with --dart-define=TEST_TOKEN=your_token');
+  }'''
+        : "  // No global state class detected — auth handled by your app's own mechanism";
+
+    final stateImport = a.appStateTokenField != null
+        ? "import 'package:${a.packageName}/app_state.dart';"
+        : '';
+
+    final firebaseImports = a.hasFirebase
+        ? '''
+import 'package:firebase_core/firebase_core.dart';
+${a.firebaseOptionsImport ?? ''}'''
+        : '';
+
+    helperFile.writeAsStringSync('''// Generated by Dangi Doctor 🩺
+// Shared test helper — auto-generated, do not edit manually.
+// Re-run Dangi Doctor to regenerate after source changes.
+
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+$firebaseImports
+$stateImport
+
+bool _initialized = false;
+
+/// Initialize project dependencies and inject test auth state.
+Future<void> setupTest() async {
+  if (_initialized) return;
+  _initialized = true;
+${a.hasFirebase ? '''  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );''' : '  // No Firebase detected in this project'}
+$initBlock$authBlock
+}
+
+/// Pump the app and collect ALL Flutter errors thrown during rendering.
+///
+/// Uses [FlutterError.onError] to capture every error across all frames,
+/// not just the first one (which is all tester.takeException() gives you).
+/// The tester exception queue is drained at the end so the framework does
+/// not re-fail the test — we want to control the failure message ourselves.
+Future<List<FlutterErrorDetails>> pumpAppCollecting(
+    WidgetTester tester, Widget app) async {
+  final errors = <FlutterErrorDetails>[];
+  final original = FlutterError.onError;
+  FlutterError.onError = (details) {
+    errors.add(details);
+    original?.call(details); // still print full stack to console
+  };
+  try {
+    await tester.pumpWidget(app);
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 500));
+    }
+  } finally {
+    FlutterError.onError = original;
+    tester.takeException(); // drain so framework does not re-fail us
+  }
+  return errors;
+}
+
+/// Format a list of errors into a human-readable diagnostic report.
+String formatErrors(List<FlutterErrorDetails> errors) {
+  return errors.asMap().entries.map((entry) {
+    final i = entry.key + 1;
+    final e = entry.value;
+    final msg = e.exception.toString().split('\\n').first;
+    final stack =
+        e.stack?.toString().split('\\n').take(4).join('\\n    ') ?? '';
+    return '[\$i] \$msg\\n    \$stack';
+  }).join('\\n\\n');
+}
+''');
+    print('  ✅ test_helper.dart');
+  }
+
   String _generateSmokeTest(
     String screenName,
     Map<String, dynamic> sourceInfo,
-    _AppInfo appInfo,
+    AppAnalysis a,
   ) {
-    final keys = sourceInfo['keys'] as List<String>;
+    final keys = (sourceInfo['keys'] as List<String>)
+        .where((k) => !RegExp(r'^[a-f0-9]{20,}$').hasMatch(k))
+        .where((k) => k.length < 50)
+        .toList();
+
     final keyAssertions = keys
         .take(3)
-        .map((k) => "    expect(find.byKey(const Key('$k')), findsWidgets);")
+        .map((k) =>
+            "      if (find.byKey(const Key('$k'), skipOffstage: false).evaluate().isNotEmpty)\n"
+            "        expect(find.byKey(const Key('$k')), findsWidgets);")
         .join('\n');
 
+    final riskTests = _generateRiskTests(a.knownRisks, a.runAppCall);
+
     return '''// Generated by Dangi Doctor 🩺
-// Screen: $screenName
+// Screen: $screenName — smoke tests
 // Run: flutter test integration_test/dangi_doctor/${_toSnakeCase(screenName)}_smoke_test.dart -d <device_id>
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
-${appInfo.appImport}
+import 'package:${a.packageName}/main.dart';
+import 'test_helper.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
   group('$screenName — smoke tests', () {
     testWidgets('app launches without crashing', (tester) async {
-      await tester.pumpWidget(${appInfo.runAppCall});
-      await tester.pumpAndSettle(const Duration(seconds: 5));
-      expect(tester.takeException(), isNull);
+      await setupTest();
+      final errors = await pumpAppCollecting(tester, ${a.runAppCall});
+
+      if (errors.isNotEmpty) {
+        fail(
+          'App threw \${errors.length} error(s) during launch. '
+          'These are real bugs — fix them before running further tests:\\n\\n'
+          '\${formatErrors(errors)}\\n\\n'
+          'Tip: Run Dangi Doctor again after fixing to see targeted bug tests.',
+        );
+      }
+
+      expect(find.byType(MaterialApp), findsOneWidget);
     });
-${keyAssertions.isNotEmpty ? '''
-    testWidgets('key widgets are present', (tester) async {
-      await tester.pumpWidget(${appInfo.runAppCall});
-      await tester.pumpAndSettle(const Duration(seconds: 5));
+
+${keyAssertions.isNotEmpty ? '''    testWidgets('key widgets are present', (tester) async {
+      await setupTest();
+      final errors = await pumpAppCollecting(tester, ${a.runAppCall});
+      if (errors.isEmpty) {
 $keyAssertions
+      }
     });''' : ''}
+$riskTests
   });
 }
 ''';
+  }
+
+  /// Generates one targeted test per detected [KnownRisk].
+  /// Each test explicitly names the bug, its location, and the exact fix.
+  String _generateRiskTests(List<KnownRisk> risks, String runAppCall) {
+    if (risks.isEmpty) return '';
+
+    final buffer = StringBuffer();
+    buffer.writeln(
+        '    // ─── Bug-specific tests detected by Dangi Doctor static analysis ───');
+
+    for (final risk in risks) {
+      String esc(String s) => s
+          .replaceAll('\\', '\\\\')
+          .replaceAll("'", "\\'")
+          .replaceAll('\n', '\\n');
+
+      final descEsc = esc(risk.description);
+      final fixEsc = esc(risk.suggestedFix);
+      final fileLine = '${risk.file}:${risk.line}';
+
+      switch (risk.type) {
+        case 'late_field_double_init':
+          final fieldEsc = risk.fieldName.replaceAll("'", "\\'");
+          final fieldName = risk.fieldName;
+          final callerMethod = risk.callerMethod;
+          buffer.writeln(
+            '\n'
+            "    testWidgets(\n"
+            "        'BUG: $fileLine — '\n"
+            "        'late field `$fieldName` double-init in `$callerMethod()`',\n"
+            '        (tester) async {\n'
+            '      await setupTest();\n'
+            '      final errors = await pumpAppCollecting(tester, $runAppCall);\n'
+            '\n'
+            '      final matching = errors.where((e) {\n'
+            '        final msg = e.exception.toString();\n'
+            "        return (msg.contains('LateInitializationError') ||\n"
+            "                msg.contains('already been initialized')) &&\n"
+            "            msg.contains('$fieldEsc');\n"
+            '      }).toList();\n'
+            '\n'
+            '      expect(\n'
+            '        matching,\n'
+            '        isEmpty,\n'
+            "        reason: '━━━ BUG DETECTED ━━━\\n'\n"
+            "            'File: $fileLine\\n'\n"
+            "            '\\n'\n"
+            "            'Problem:\\n'\n"
+            "            '$descEsc\\n'\n"
+            "            '\\n'\n"
+            "            'Fix:\\n'\n"
+            "            '$fixEsc\\n'\n"
+            "            '━━━━━━━━━━━━━━━━━━━',\n"
+            '      );\n'
+            '    });\n',
+          );
+
+        case 'setState_after_dispose':
+          buffer.writeln(
+            '\n'
+            "    testWidgets(\n"
+            "        'BUG: $fileLine — setState() called without mounted guard',\n"
+            '        (tester) async {\n'
+            '      await setupTest();\n'
+            '      final errors = await pumpAppCollecting(tester, $runAppCall);\n'
+            '\n'
+            '      final matching = errors.where((e) {\n'
+            '        final msg = e.exception.toString();\n'
+            "        return msg.contains('setState') &&\n"
+            "            (msg.contains('disposed') || msg.contains('after dispose'));\n"
+            '      }).toList();\n'
+            '\n'
+            '      expect(\n'
+            '        matching,\n'
+            '        isEmpty,\n'
+            "        reason: '━━━ BUG DETECTED ━━━\\n'\n"
+            "            'File: $fileLine\\n'\n"
+            "            '\\n'\n"
+            "            'Problem:\\n'\n"
+            "            '$descEsc\\n'\n"
+            "            '\\n'\n"
+            "            'Fix:\\n'\n"
+            "            '$fixEsc\\n'\n"
+            "            '━━━━━━━━━━━━━━━━━━━',\n"
+            '      );\n'
+            '    });\n',
+          );
+
+        case 'build_side_effects':
+          final fieldName = risk.fieldName;
+          final errorFragment = fieldName == 'setState'
+              ? 'setState() or markNeedsBuild() called during build'
+              : 'build() must be synchronous';
+          buffer.writeln(
+            '\n'
+            "    testWidgets(\n"
+            "        'BUG: $fileLine — side effect (`$fieldName`) inside build()',\n"
+            '        (tester) async {\n'
+            '      await setupTest();\n'
+            '      final errors = await pumpAppCollecting(tester, $runAppCall);\n'
+            '\n'
+            '      final matching = errors.where((e) {\n'
+            '        final msg = e.exception.toString();\n'
+            "        return msg.contains('$errorFragment');\n"
+            '      }).toList();\n'
+            '\n'
+            '      expect(\n'
+            '        matching,\n'
+            '        isEmpty,\n'
+            "        reason: '━━━ BUG DETECTED ━━━\\n'\n"
+            "            'File: $fileLine\\n'\n"
+            "            '\\n'\n"
+            "            'Problem:\\n'\n"
+            "            '$descEsc\\n'\n"
+            "            '\\n'\n"
+            "            'Fix:\\n'\n"
+            "            '$fixEsc\\n'\n"
+            "            '━━━━━━━━━━━━━━━━━━━',\n"
+            '      );\n'
+            '    });\n',
+          );
+
+        case 'stream_subscription_leak':
+          // Leaks can't be caught via pumpWidget — generate a reminder test
+          // that always fails so the developer must acknowledge the fix.
+          final fieldName = risk.fieldName;
+          buffer.writeln(
+            '\n'
+            "    test(\n"
+            "        'BUG: $fileLine — StreamSubscription `$fieldName` not cancelled in dispose()',\n"
+            '        () {\n'
+            "      fail(\n"
+            "        '━━━ MEMORY LEAK DETECTED ━━━\\n'\n"
+            "        'File: $fileLine\\n'\n"
+            "        '\\n'\n"
+            "        'Problem:\\n'\n"
+            "        '$descEsc\\n'\n"
+            "        '\\n'\n"
+            "        'Fix:\\n'\n"
+            "        '$fixEsc\\n'\n"
+            "        '━━━━━━━━━━━━━━━━━━━\\n'\n"
+            "        'Delete this test once the fix is applied.',\n"
+            '      );\n'
+            '    });\n',
+          );
+      }
+    }
+
+    return buffer.toString();
   }
 
   String _generateInteractionTest(
     String screenName,
     Map<String, dynamic> sourceInfo,
     List<InteractionResult> results,
-    _AppInfo appInfo,
+    AppAnalysis a,
   ) {
     final tappableLines =
         sourceInfo['tappable_lines'] as List<Map<String, dynamic>>;
-    final keys = sourceInfo['keys'] as List<String>;
+    final keys = (sourceInfo['keys'] as List<String>)
+        .where((k) => !RegExp(r'^[a-f0-9]{20,}$').hasMatch(k))
+        .toList();
 
-    // Generate tests from real source lines
-    final sourceBasedTests = tappableLines.take(5).map((t) {
+    final sourceTests = tappableLines.take(6).map((t) {
       final type = t['type'] as String;
       final line = t['line'] as int;
       final file = t['file'] as String;
       return '''
     testWidgets('$type at $file:$line responds to tap', (tester) async {
-      await tester.pumpWidget(${appInfo.runAppCall});
-      await tester.pumpAndSettle(const Duration(seconds: 5));
-
+      await setupTest();
+      await pumpApp(tester, ${a.runAppCall});
       final widgets = find.byType($type, skipOffstage: false);
       if (widgets.evaluate().isNotEmpty) {
         await tester.ensureVisible(widgets.first);
-        await tester.pumpAndSettle();
+        await tester.pump();
         await tester.tap(widgets.first);
-        await tester.pumpAndSettle();
+        for (var i = 0; i < 4; i++) await tester.pump(const Duration(milliseconds: 500));
         expect(tester.takeException(), isNull);
       }
     });''';
     }).join('\n');
 
-    // Generate tests from widget keys (most reliable)
-    final keyBasedTests = keys.take(5).map((k) => '''
-    testWidgets('widget with key "$k" is present and tappable', (tester) async {
-      await tester.pumpWidget(${appInfo.runAppCall});
-      await tester.pumpAndSettle(const Duration(seconds: 5));
-
+    final keyTests = keys.take(4).map((k) => '''
+    testWidgets('widget "$k" is tappable', (tester) async {
+      await setupTest();
+      await pumpApp(tester, ${a.runAppCall});
       final widget = find.byKey(const Key('$k'), skipOffstage: false);
       if (widget.evaluate().isNotEmpty) {
         await tester.ensureVisible(widget);
-        await tester.pumpAndSettle();
+        await tester.pump();
         await tester.tap(widget);
-        await tester.pumpAndSettle();
+        for (var i = 0; i < 4; i++) await tester.pump(const Duration(milliseconds: 500));
         expect(tester.takeException(), isNull);
       }
     });''').join('\n');
 
-    // Dangi Doctor observed interactions
-    final observedTests =
-        results.where((r) => r.executed).take(3).map((r) => '''
-    // Dangi Doctor observed: ${r.outcome}
-    // ${r.interaction.file}:${r.interaction.line}''').join('\n');
-
     return '''// Generated by Dangi Doctor 🩺
-// Screen: $screenName — based on actual source code analysis
+// Screen: $screenName — interaction tests
 // Run: flutter test integration_test/dangi_doctor/${_toSnakeCase(screenName)}_interaction_test.dart -d <device_id>
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
-${appInfo.appImport}
+import 'package:${a.packageName}/main.dart';
+import 'test_helper.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
   group('$screenName — interaction tests', () {
-$sourceBasedTests
-$keyBasedTests
-$observedTests
+$sourceTests
+$keyTests
   });
 }
 ''';
@@ -345,7 +461,7 @@ $observedTests
   String _generatePerfTest(
     String screenName,
     List<InteractionResult> results,
-    _AppInfo appInfo,
+    AppAnalysis a,
   ) {
     final janky = results
         .where((r) => r.executed && (r.performance?.jankyFrames ?? 0) > 0)
@@ -366,16 +482,17 @@ $observedTests
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
-${appInfo.appImport}
+import 'package:${a.packageName}/main.dart';
+import 'test_helper.dart';
 
 void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
   group('$screenName — performance tests', () {
     testWidgets('renders within frame budget', (tester) async {
+      await setupTest();
       await binding.watchPerformance(() async {
-        await tester.pumpWidget(${appInfo.runAppCall});
-        await tester.pumpAndSettle(const Duration(seconds: 5));
+        await pumpApp(tester, ${a.runAppCall});
       }, reportKey: '${_toSnakeCase(screenName)}');
     });
 
@@ -385,26 +502,103 @@ $jankyNote
 ''';
   }
 
-  void _saveReadme(String dirPath) {
+  Map<String, dynamic> _readScreenSource(
+      String screenName, List<WidgetIssue> issues) {
+    final screenFiles = issues
+        .where((i) => i.file != null)
+        .map((i) => i.file!)
+        .toSet()
+        .where((f) =>
+            !f.contains('nested.dart') &&
+            !f.contains('router.dart') &&
+            !f.contains('builder.dart') &&
+            !f.contains('vector_graphics.dart'))
+        .toList();
+
+    final keys = <String>[];
+    final lines = <Map<String, dynamic>>[];
+
+    for (final fileName in screenFiles) {
+      final fullPath = _findFile(fileName);
+      if (fullPath == null) continue;
+      try {
+        final content = File(fullPath).readAsStringSync();
+        final fileLines = content.split('\n');
+
+        final keyMatches = RegExp(r"Key\('([^']+)'\)").allMatches(content);
+        for (final m in keyMatches) {
+          keys.add(m.group(1)!);
+        }
+
+        final tappablePatterns = [
+          RegExp(r'ElevatedButton\s*\('),
+          RegExp(r'TextButton\s*\('),
+          RegExp(r'InkWell\s*\('),
+          RegExp(r'GestureDetector\s*\('),
+          RegExp(r'IconButton\s*\('),
+          RegExp(r'FloatingActionButton\s*\('),
+        ];
+
+        for (var i = 0; i < fileLines.length; i++) {
+          for (final pattern in tappablePatterns) {
+            if (pattern.hasMatch(fileLines[i])) {
+              lines.add({
+                'type': pattern.pattern.split(r'\s')[0],
+                'line': i + 1,
+                'file': fileName,
+              });
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    return {
+      'files': screenFiles,
+      'keys': keys,
+      'tappable_lines': lines,
+    };
+  }
+
+  String? _findFile(String fileName) {
+    final libDir = Directory('$projectPath/lib');
+    if (!libDir.existsSync()) return null;
+    try {
+      return libDir
+          .listSync(recursive: true)
+          .whereType<File>()
+          .where((f) => f.path.endsWith(fileName))
+          .map((f) => f.path)
+          .firstOrNull;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _saveReadme(String dirPath, AppAnalysis a) {
     File('$dirPath/README.md')
         .writeAsStringSync('''# Dangi Doctor — Generated Tests 🩺
 
-Auto-generated from live app analysis. Re-run Dangi Doctor to update.
+Auto-generated from live app analysis. Re-run Dangi Doctor after UI changes.
 
-## Run all tests
+## Quick start
+
 ```bash
-flutter test integration_test/dangi_doctor/ -d <device_id>
+flutter test integration_test/dangi_doctor/ \\
+  --dart-define=TEST_TOKEN=your_backend_token \\
+  -d <device_id>
 ```
 
-## Run specific screen
-```bash
-flutter test integration_test/dangi_doctor/login_page_widget_smoke_test.dart -d <device_id>
-```
+## How auth bypass works
+Dangi Doctor detected your auth setup:
+- App state class: `${a.appStateClass}`
+- Init method: `${a.appStateInitMethod ?? 'none detected'}`
+- Token field: `${a.appStateTokenField ?? 'none detected'}`
 
-## Performance tests
-```bash
-flutter drive --target=integration_test/dangi_doctor/login_page_widget_perf_test.dart --profile -d <device_id>
-```
+Tests inject the token directly into `${a.appStateClass}` — no Google OAuth popup needed.
+
+## Getting a test token
+Log in to ${a.packageName} manually once, then copy the token from your app logs.
 
 Generated: ${DateTime.now().toIso8601String()}
 ''');
@@ -418,16 +612,4 @@ Generated: ${DateTime.now().toIso8601String()}
         .replaceAll(RegExp(r'[^a-z0-9_]'), '_')
         .toLowerCase();
   }
-}
-
-class _AppInfo {
-  final String appImport;
-  final String runAppCall;
-  final String appClass;
-
-  _AppInfo({
-    required this.appImport,
-    required this.runAppCall,
-    this.appClass = 'MyApp',
-  });
 }

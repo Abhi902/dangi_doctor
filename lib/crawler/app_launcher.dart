@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'adb_runner.dart';
 
 class AppLauncher {
   final String projectPath;
@@ -33,7 +34,8 @@ class AppLauncher {
     for (final port in [8181, 8182, 8183, 8184, 8185]) {
       await _killPort(port);
     }
-    await Process.run('adb', ['forward', '--remove-all']);
+    // Clear all adb forwards so port 8181 is free
+    await Process.run('/opt/homebrew/bin/adb', ['forward', '--remove-all']);
     await Future.delayed(const Duration(seconds: 2));
     print('  ✅ All Flutter processes cleared\n');
   }
@@ -121,7 +123,7 @@ class AppLauncher {
     final spinner = _ProgressSpinner();
     spinner.start('Building app');
 
-    void handleOutput(String text) {
+    Future<void> handleOutput(String text) async {
       // Only show clean status updates — suppress raw Android logs
       if (text.contains('Running Gradle')) {
         spinner.update('Running Gradle build');
@@ -151,10 +153,31 @@ class AppLauncher {
         if (match != null) {
           var url = match.group(1)!.trim();
           url = url.replaceFirst('http://', 'ws://');
-          if (!url.contains('/ws')) {
-            url = '${url.replaceAll(RegExp(r'/?$'), '')}/ws';
+
+          // Extract the actual port Flutter chose
+          final portMatch = RegExp(r':(\d+)').firstMatch(url);
+          final actualPort = portMatch != null
+              ? int.tryParse(portMatch.group(1)!) ?? port
+              : port;
+
+          // Rewrite host but keep token path
+          url = url.replaceFirstMapped(
+            RegExp(r'ws://[^/]+'),
+            (_) => 'ws://127.0.0.1:$actualPort',
+          );
+
+          // Ensure ends with /ws
+          if (!url.endsWith('/ws')) {
+            url = url.replaceAll(RegExp(r'/?$'), '') + '/ws';
           }
+
           spinner.stop('✅ App launched successfully');
+          print('  📡 VM service on port $actualPort');
+
+          // Forward port, remapping to the real device port if Flutter lied
+          if (!isEmulator) {
+            await _forwardWithActualDevicePort(deviceId, actualPort);
+          }
           wsCompleter.complete(url);
           return;
         }
@@ -172,29 +195,77 @@ class AppLauncher {
       },
     );
 
-    if (!isEmulator) {
-      await _forwardPort(deviceId, port);
-    }
+    // Wait for VM service to be fully ready
+    stdout.write('  ⏳ Waiting for VM service to be ready...');
+    await Future.delayed(const Duration(seconds: 2));
+    print(' ready!');
 
     return wsUrl;
   }
 
-  Future<void> _forwardPort(String deviceId, int port) async {
-    stdout.write('📡 Forwarding port $port... ');
-    // Try up to 3 times — sometimes needs a moment after app launches
-    for (var i = 0; i < 3; i++) {
-      final result = await Process.run(
-        'adb',
-        ['-s', deviceId, 'forward', 'tcp:$port', 'tcp:$port'],
-      ).timeout(const Duration(seconds: 5));
-
-      if (result.exitCode == 0) {
-        print('✅');
-        return;
+  /// Forward the reported port, remapping to the real device port if Flutter lied.
+  Future<void> _forwardWithActualDevicePort(
+      String deviceId, int reportedPort) async {
+    final devicePort =
+        await _findActualVmPort(deviceId, hintPort: reportedPort);
+    if (devicePort != null && devicePort != reportedPort) {
+      print(
+          '  ⚠️  Flutter reported port $reportedPort but VM is on device port $devicePort');
+      final ok =
+          await AdbRunner.forwardRemap(deviceId, reportedPort, devicePort);
+      if (ok) {
+        print('📡 Port remapped: Mac:$reportedPort → Device:$devicePort ✅');
+      } else {
+        print(
+            '📡 Run manually: adb -s $deviceId forward tcp:$reportedPort tcp:$devicePort');
       }
-      await Future.delayed(const Duration(seconds: 1));
+    } else {
+      final ok = await AdbRunner.forward(deviceId, reportedPort);
+      if (ok) {
+        print('📡 Port $reportedPort forwarded ✅');
+      } else {
+        print(
+            '📡 Run manually: adb -s $deviceId forward tcp:$reportedPort tcp:$reportedPort');
+      }
     }
-    print('⚠️  Run manually: adb -s $deviceId forward tcp:$port tcp:$port');
+  }
+
+  /// Scan /proc/net/tcp on the device to find the actual port the Dart VM
+  /// is listening on. Flutter sometimes reports the wrong port.
+  ///
+  /// Looks for LISTEN (state 0A) entries on loopback (127.0.0.1 = 0100007F).
+  /// Returns the port closest to [hintPort] when multiple candidates exist.
+  Future<int?> _findActualVmPort(String deviceId, {int? hintPort}) async {
+    try {
+      final result = await AdbRunner.run(
+        deviceId,
+        ['shell', 'cat', '/proc/net/tcp'],
+        timeout: const Duration(seconds: 5),
+      );
+      final ports = <int>[];
+      for (final line in result.stdout.toString().split('\n')) {
+        final parts = line.trim().split(RegExp(r'\s+'));
+        if (parts.length < 4) continue;
+        final localAddr = parts[1]; // "0100007F:A28D"
+        final state = parts[3]; // "0A" = LISTEN
+        if (state != '0A') continue;
+        final addrParts = localAddr.split(':');
+        if (addrParts.length != 2) continue;
+        if (addrParts[0] != '0100007F') continue; // must be 127.0.0.1
+        final port = int.tryParse(addrParts[1], radix: 16);
+        if (port == null || port <= 1024) continue;
+        ports.add(port);
+      }
+      if (ports.isEmpty) return null;
+      if (ports.length == 1) return ports.first;
+      if (hintPort != null) {
+        ports.sort(
+            (a, b) => (a - hintPort).abs().compareTo((b - hintPort).abs()));
+      }
+      return ports.first;
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> dispose() async {

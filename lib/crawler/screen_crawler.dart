@@ -18,20 +18,28 @@ class ScreenCrawler {
     print('🔌 Connecting to VM service...');
     print('  📡 $wsUrl');
 
-    try {
-      _vmService = await vmServiceConnectUri(wsUrl, log: null);
-      final vm = await _vmService!.getVM();
-      _isolateId = vm.isolates!.first.id!;
+    // Retry up to 5 times — VM service may not be ready immediately
+    for (var attempt = 1; attempt <= 5; attempt++) {
+      try {
+        _vmService = await vmServiceConnectUri(wsUrl, log: null);
+        final vm = await _vmService!.getVM();
+        _isolateId = vm.isolates!.first.id!;
 
-      print('✅ Connected to VM service');
-      print('📱 Isolate ID: $_isolateId');
+        print('✅ Connected to VM service');
+        print('📱 Isolate ID: $_isolateId');
 
-      final isolate = await _vmService!.getIsolate(_isolateId!);
-      print('🩺 App name   : ${isolate.name}');
-      print('🩺 App running: ${isolate.runnable}');
-    } catch (e) {
-      print('❌ Failed to connect: $e');
-      rethrow;
+        final isolate = await _vmService!.getIsolate(_isolateId!);
+        print('🩺 App name   : ${isolate.name}');
+        print('🩺 App running: ${isolate.runnable}');
+        return;
+      } catch (e) {
+        if (attempt == 5) {
+          print('❌ Failed to connect after $attempt attempts: $e');
+          rethrow;
+        }
+        print('  ⏳ Connection attempt $attempt failed — retrying in 2s...');
+        await Future.delayed(const Duration(seconds: 2));
+      }
     }
   }
 
@@ -66,27 +74,44 @@ class ScreenCrawler {
     const splashWidgets = [
       'SplashScreen',
       'splashScreenPage',
-      'LinearProgressIndicator'
+      'LinearProgressIndicator',
+      'AnimatedContainer',
     ];
-    final deadline = DateTime.now().add(const Duration(seconds: 45));
+    final deadline = DateTime.now().add(const Duration(seconds: 60));
     bool wasSplash = false;
+    int failCount = 0;
 
     while (DateTime.now().isBefore(deadline)) {
-      final tree = await captureWidgetTree(silent: true);
-      final isSplash = splashWidgets.any((s) => _treeContains(tree, s));
+      try {
+        final tree = await captureWidgetTree(silent: true);
+        failCount = 0; // reset on success
 
-      if (isSplash) {
-        wasSplash = true;
-        stdout.write('  ⏳ Splash screen loading...\r');
-      } else if (wasSplash) {
-        // Was splash, now it's gone — app is loaded
-        print('  ✅ App loaded — splash screen dismissed');
-        await Future.delayed(const Duration(milliseconds: 800));
-        return;
-      } else {
-        // Never saw splash — app already past it
-        print('  ✅ App ready');
-        return;
+        final isSplash = splashWidgets.any((s) => _treeContains(tree, s));
+
+        if (isSplash) {
+          wasSplash = true;
+          stdout.write('  ⏳ Splash screen loading...\r');
+        } else if (wasSplash) {
+          print('  ✅ App loaded — splash screen dismissed');
+          await Future.delayed(const Duration(milliseconds: 800));
+          return;
+        } else {
+          // Never saw splash — app already loaded
+          print('  ✅ App ready');
+          return;
+        }
+      } catch (_) {
+        failCount++;
+        stdout.write('  ⏳ Connecting... (attempt $failCount)\r');
+        if (failCount > 10) {
+          // Connection repeatedly failing — likely port not forwarded
+          print('\n  ⚠️  Cannot read widget tree.');
+          print('  Run this in another terminal:');
+          print('  adb -s <device_id> forward tcp:8181 tcp:8181');
+          print('  Then press Enter to retry...');
+          stdin.readLineSync();
+          failCount = 0;
+        }
       }
 
       await Future.delayed(const Duration(milliseconds: 500));
