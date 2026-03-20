@@ -32,6 +32,16 @@ class AdbRunner {
     return _adbPath!;
   }
 
+  /// Run an adb command without a device ID (e.g. forward --remove-all, devices)
+  static Future<ProcessResult> runGlobal(
+    List<String> args, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    final adb = await _findAdb();
+    final cmd = '$adb ${args.join(' ')}';
+    return Process.run('/bin/sh', ['-c', cmd]).timeout(timeout);
+  }
+
   /// Run an adb command with the device ID
   static Future<ProcessResult> run(
     String deviceId,

@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:dangi_doctor/ai/knowledge/ai_providers.dart';
+import 'package:dangi_doctor/ai/knowledge/project_fingerprint.dart';
 import 'package:dangi_doctor/crawler/screen_navigator.dart';
 import 'package:dangi_doctor/crawler/app_launcher.dart';
 import 'package:dangi_doctor/crawler/screen_crawler.dart';
@@ -25,9 +26,7 @@ void main() async {
   print("Your Flutter app's personal physician 🩺");
   print('');
 
-  final projectPath = Platform.environment['DANGI_PROJECT'] ??
-      '/Users/abhishek/Desktop/reflex-flutter';
-  final deviceId = Platform.environment['DANGI_DEVICE'] ?? 'Z5BISOCMHEP7FAXG';
+  final projectPath = _resolveProjectPath();
   print('📁 Project: $projectPath\n');
 
   // Step 1 — pick AI provider
@@ -37,6 +36,7 @@ void main() async {
   // Step 2 — get VM service URL
   String? wsUrl = await VmServiceLocator.discover(projectPath: projectPath);
   AppLauncher? launcher;
+  String? deviceId;
 
   if (wsUrl == null) {
     print('');
@@ -52,6 +52,7 @@ void main() async {
     if (choice == '1') {
       launcher = AppLauncher(projectPath: projectPath);
       wsUrl = await launcher.pickDeviceAndLaunch();
+      deviceId = launcher.pickedDeviceId;
       await VmServiceLocator.saveUrl(projectPath, wsUrl);
     } else {
       wsUrl = await VmServiceLocator.askUser();
@@ -75,11 +76,14 @@ void main() async {
     await crawler.waitForAppReady();
     print('');
 
+    // Layer 3 — always generate project fingerprint, regardless of AI provider
+    await ProjectFingerprint(projectPath: projectPath).loadOrScan();
+
     // Full app navigation crawl
     final navigator = ScreenNavigator(
       vmService: crawler.vmService,
       isolateId: crawler.isolateId,
-      deviceId: deviceId,
+      deviceId: deviceId ?? '',
       maxScreens: 10,
     );
 
@@ -147,4 +151,42 @@ void main() async {
     await crawler.disconnect();
     await launcher?.dispose();
   }
+}
+
+/// Resolve the Flutter project path.
+///
+/// Priority:
+/// 1. DANGI_PROJECT env var (CI / power users)
+/// 2. Current working directory if it contains a pubspec.yaml with a flutter dependency
+/// 3. Ask the user interactively
+String _resolveProjectPath() {
+  // 1. Explicit env var override
+  final envPath = Platform.environment['DANGI_PROJECT'];
+  if (envPath != null && envPath.isNotEmpty) return envPath;
+
+  // 2. Auto-detect: current working directory is a Flutter project
+  final cwd = Directory.current.path;
+  final pubspec = File('$cwd/pubspec.yaml');
+  if (pubspec.existsSync()) {
+    final content = pubspec.readAsStringSync();
+    if (content.contains('flutter:')) {
+      print('✅ Detected Flutter project in current directory.');
+      return cwd;
+    }
+  }
+
+  // 3. Ask the user
+  print('Could not auto-detect a Flutter project in the current directory.');
+  print('Please provide the absolute path to your Flutter project:');
+  stdout.write('Project path: ');
+  final input = stdin.readLineSync()?.trim() ?? '';
+  if (input.isEmpty) {
+    print('❌ No project path provided. Exiting.');
+    exit(1);
+  }
+  if (!Directory(input).existsSync()) {
+    print('❌ Directory not found: $input');
+    exit(1);
+  }
+  return input;
 }

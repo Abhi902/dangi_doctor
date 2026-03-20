@@ -99,14 +99,11 @@ dev_dependencies:
 From the root of your Flutter project:
 
 ```bash
-dart pub global run dangi_doctor
+cd /path/to/your/flutter/app
+dangi_doctor
 ```
 
-Or if added as a dev dependency:
-
-```bash
-dart run dangi_doctor
-```
+Dangi Doctor auto-detects your project from the current directory. If you need to point it at a different path, use the `DANGI_PROJECT` env var.
 
 On first run, Dangi Doctor will ask how to connect:
 
@@ -140,11 +137,11 @@ flutter test integration_test/dangi_doctor/<screen>_smoke_test.dart \
 
 | Variable | Description |
 |---|---|
-| `DANGI_PROJECT` | Path to your Flutter project (defaults to current directory) |
-| `DANGI_DEVICE` | adb device ID to use (defaults to first connected device) |
-| `ANTHROPIC_API_KEY` | Claude API key for AI diagnosis |
+| `DANGI_PROJECT` | Path to your Flutter project (auto-detected from cwd if omitted) |
+| `CLAUDE_API_KEY` | Claude API key for AI diagnosis |
 | `OPENAI_API_KEY` | OpenAI API key for AI diagnosis |
 | `GEMINI_API_KEY` | Gemini API key for AI diagnosis |
+| `GROQ_API_KEY` | Groq API key for AI diagnosis |
 
 ---
 

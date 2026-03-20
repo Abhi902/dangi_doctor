@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
-import 'package:dangi_doctor/ai/knowledge/%20prompt_assembler.dart';
+import 'package:dangi_doctor/ai/knowledge/prompt_assembler.dart';
 import 'package:http/http.dart' as http;
 
 // ─── Base interface ────────────────────────────────────────────────────────────

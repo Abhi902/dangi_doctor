@@ -7,8 +7,13 @@ class AppLauncher {
   final String projectPath;
   Process? _flutterProcess;
 
+  /// The device ID that was picked during [pickDeviceAndLaunch].
+  String? pickedDeviceId;
+
   AppLauncher({required this.projectPath});
 
+  /// Returns the VM service WebSocket URL.
+  /// Sets [pickedDeviceId] as a side-effect.
   Future<String> pickDeviceAndLaunch() async {
     await killAllFlutterProcesses();
     final devices = await _getDevices();
@@ -21,6 +26,7 @@ class AppLauncher {
     }
 
     final device = await _askUserToPickDevice(devices);
+    pickedDeviceId = device['id'] as String?;
     return await _launchOnDevice(device);
   }
 
@@ -35,7 +41,7 @@ class AppLauncher {
       await _killPort(port);
     }
     // Clear all adb forwards so port 8181 is free
-    await Process.run('/opt/homebrew/bin/adb', ['forward', '--remove-all']);
+    await AdbRunner.runGlobal(['forward', '--remove-all']);
     await Future.delayed(const Duration(seconds: 2));
     print('  ✅ All Flutter processes cleared\n');
   }
@@ -116,8 +122,6 @@ class AppLauncher {
     );
 
     final wsCompleter = Completer<String>();
-    bool appBuilt = false;
-    bool appSynced = false;
 
     // Progress spinner
     final spinner = _ProgressSpinner();
@@ -128,12 +132,10 @@ class AppLauncher {
       if (text.contains('Running Gradle')) {
         spinner.update('Running Gradle build');
       } else if (text.contains('Built build/')) {
-        appBuilt = true;
         spinner.update('Build complete — installing on device');
       } else if (text.contains('Syncing files')) {
         spinner.update('Syncing files to device');
       } else if (text.contains('Flutter run key commands')) {
-        appSynced = true;
         spinner.update('App running — waiting for VM service');
       }
 

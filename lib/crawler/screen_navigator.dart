@@ -222,7 +222,6 @@ class ScreenNavigator {
       triggers.add(Map<String, dynamic>.from(node));
     } else if (tappableTypes.contains(type)) {
       // Only include if it looks like navigation (not inside a form)
-      final file = node['creationLocation']?['file']?.toString() ?? '';
       if (!_isFormWidget(node)) {
         triggers.add(Map<String, dynamic>.from(node));
       }

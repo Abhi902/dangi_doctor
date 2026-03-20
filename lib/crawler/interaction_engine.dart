@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'package:vm_service/vm_service.dart';
 import '../analysis/performance.dart';

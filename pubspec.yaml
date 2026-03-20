@@ -1,9 +1,25 @@
 name: dangi_doctor
-description: Your Flutter app's personal physician.
+description: >-
+  Flutter app health CLI — crawls every screen via the Dart VM service,
+  analyses widget trees, measures performance, detects known bugs, and
+  generates integration test scripts automatically.
 version: 0.1.0
+repository: https://github.com/dangi-doctor/dangi-doctor
+homepage: https://github.com/dangi-doctor/dangi-doctor
+issue_tracker: https://github.com/dangi-doctor/dangi-doctor/issues
+
+topics:
+  - flutter
+  - testing
+  - cli
+  - performance
+  - analysis
 
 environment:
   sdk: ">=3.0.0 <4.0.0"
+
+executables:
+  dangi_doctor: dangi_doctor
 
 dependencies:
   args: ^2.4.0
