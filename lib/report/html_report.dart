@@ -2,6 +2,8 @@ import 'dart:io';
 import '../crawler/screen_navigator.dart';
 import '../generator/app_analyser.dart';
 
+/// Generates a self-contained HTML health report for all discovered screens
+/// and writes it to `.dangi_doctor/report_<timestamp>.html` in the project.
 class HtmlReportGenerator {
   /// Generate an HTML health report and auto-open it in the browser.
   /// Returns the path to the saved file.

@@ -1,3 +1,14 @@
+## 0.2.1
+
+- Fixed pub.dev score issues:
+  - Shortened `pubspec.yaml` description to fit 60–180 character limit.
+  - Updated `repository`, `homepage`, and `issue_tracker` to the correct GitHub URL.
+  - Bumped `vm_service` dependency to `^15.0.0` (latest compatible version).
+  - Added `example/main.dart` (canonical example file pub.dev looks for).
+  - Fixed HTML angle brackets in dartdoc (`GlobalKey<NavigatorState>` → backtick-quoted).
+  - Added dartdoc comments to `DiscoveredScreen` fields, `ScreenNavigator` fields,
+    and `HtmlReportGenerator` to push API documentation coverage above 20%.
+
 ## 0.2.0
 
 - **Phase 2 navigation completely rewritten** — replaced nav-bar heuristic detection with

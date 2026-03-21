@@ -8,14 +8,28 @@ import '../generator/app_analyser.dart';
 import 'adb_runner.dart';
 import 'vm_evaluator.dart';
 
-/// A single discovered screen.
+/// A single discovered screen with its full analysis results.
 class DiscoveredScreen {
+  /// Widget type name of the root widget (e.g. `HomePageWidget`).
   final String name;
+
+  /// Raw widget tree captured from the Flutter VM service.
   final Map<String, dynamic> widgetTree;
+
+  /// Frame-timing performance data, or null if unavailable.
   final ScreenPerformance? performance;
+
+  /// All widget-tree issues detected by [TreeAnalyser].
   final List<WidgetIssue> issues;
+
+  /// Total number of widgets in the tree.
   final int totalWidgets;
+
+  /// Maximum widget nesting depth.
   final int maxDepth;
+
+  /// Human-readable label describing how this screen was reached
+  /// (e.g. a button label, route path, or `"start"`).
   final String? navigatedVia;
 
   DiscoveredScreen({
@@ -43,9 +57,17 @@ class DiscoveredScreen {
 ///   discovered. Presses BACK to return and repeats for the next element.
 ///   No screen-size guessing, no nav-bar detection — works on any Flutter app.
 class ScreenNavigator {
+  /// Connected VM service used to read the widget tree and evaluate expressions.
   final VmService vmService;
+
+  /// Dart isolate ID of the running Flutter app.
   final String isolateId;
+
+  /// ADB device ID (e.g. `Z5BISOCMHEP7FAXG`). Required for Phase 2 taps.
+  /// Pass an empty string or null to skip Phase 2.
   final String? deviceId;
+
+  /// Maximum number of screens to discover before stopping. Defaults to 20.
   final int maxScreens;
 
   /// Optional static analysis result — provides detected routes and router type.
@@ -55,6 +77,7 @@ class ScreenNavigator {
   /// in `.dangi_doctor/explored_paths.json` across runs.
   final String? projectPath;
 
+  /// All screens discovered so far, in discovery order.
   final List<DiscoveredScreen> discoveredScreens = [];
   final Set<String> _visitedScreenNames = {};
   final TreeAnalyser _analyser = TreeAnalyser();

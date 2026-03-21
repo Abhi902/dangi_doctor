@@ -10,7 +10,7 @@ import 'package:vm_service/vm_service.dart';
 /// own top-level declarations. So `navigatorKey` (defined in nav.dart) cannot
 /// be referenced when evaluating IN nav.dart's library context.
 ///
-/// Fix: locate the live GlobalKey<NavigatorState> instance on the heap via
+/// Fix: locate the live `GlobalKey<NavigatorState>` instance on the heap via
 /// getInstances(), then inject it as a named variable in evaluate()'s `scope`
 /// parameter. Extension methods (go/goNamed from go_router) are resolved
 /// against nav.dart's library context, where they are in scope via the
@@ -25,7 +25,7 @@ class VmEvaluator {
   /// Library ID of nav.dart (or equivalent) — used as evaluate context.
   String? _bestLibId;
 
-  /// Object ID of the live navigatorKey GlobalKey<NavigatorState> instance.
+  /// Object ID of the live navigatorKey `GlobalKey<NavigatorState>` instance.
   String? _navKeyObjectId;
 
   /// All user-package library IDs (fallback pool for GetX / other strategies).
