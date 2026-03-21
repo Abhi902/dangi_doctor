@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'package:vm_service/vm_service.dart';
 import '../analysis/tree_analyser.dart';
 import '../analysis/performance.dart';
@@ -34,12 +36,12 @@ class DiscoveredScreen {
 ///   (GetX / GoRouter / Navigator 1.0 / AutoRoute / Beamer).
 ///   Iterates over every route path found by static analysis.
 ///
-/// **Phase 2 — Widget heuristic taps**
-///   For BottomNavigationBar, NavigationBar, TabBar, and NavigationRail widgets
-///   that are visible on each recorded screen, calculates physical tap
-///   coordinates from screen dimensions + item count rather than asking the
-///   VM inspector (which does not reliably return position data on all
-///   Flutter versions).
+/// **Phase 2 — Universal tappable exploration**
+///   Dumps the Android accessibility tree via `uiautomator dump` to get the
+///   exact pixel bounds of every clickable element on screen. Taps each one;
+///   if the root widget type or loaded source files change, a new screen was
+///   discovered. Presses BACK to return and repeats for the next element.
+///   No screen-size guessing, no nav-bar detection — works on any Flutter app.
 class ScreenNavigator {
   final VmService vmService;
   final String isolateId;
@@ -48,6 +50,10 @@ class ScreenNavigator {
 
   /// Optional static analysis result — provides detected routes and router type.
   final AppAnalysis? analysis;
+
+  /// Absolute path to the Flutter project root — used to persist explored paths
+  /// in `.dangi_doctor/explored_paths.json` across runs.
+  final String? projectPath;
 
   final List<DiscoveredScreen> discoveredScreens = [];
   final Set<String> _visitedScreenNames = {};
@@ -58,12 +64,18 @@ class ScreenNavigator {
   /// Physical screen size in pixels (width, height).
   (int, int)? _screenSize;
 
+  /// Explored tappable coordinates per screen, keyed by "$screenName@$cx,$cy".
+  /// Loaded from the persistence file at phase-2 start and merged with new
+  /// discoveries at phase-2 end.
+  final Map<String, Set<String>> _exploredTappables = {};
+
   ScreenNavigator({
     required this.vmService,
     required this.isolateId,
     this.deviceId,
     this.maxScreens = 10,
     this.analysis,
+    this.projectPath,
   });
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -85,7 +97,7 @@ class ScreenNavigator {
     if (deviceId != null && deviceId!.isNotEmpty) {
       _screenSize = await _getScreenPhysicalSize();
       final (w, h) = _screenSize!;
-      print('  📐 Screen size: ${w}x$h px');
+      print('  📐 Screen size: ${w}x${h}px');
     }
 
     // Record the starting screen
@@ -98,7 +110,8 @@ class ScreenNavigator {
     // ── Phase 1: route-based navigation ───────────────────────────────────
     if (analysis != null && analysis!.routes.isNotEmpty) {
       if (!_evaluator.canEvaluate) {
-        print('🔀 Phase 1 — skipped (no Dart compilation service; rerun with a fresh flutter launch)\n');
+        print(
+            '🔀 Phase 1 — skipped (no Dart compilation service; rerun with a fresh flutter launch)\n');
       } else {
         print(
             '🔀 Phase 1 — navigating ${analysis!.routes.length} detected routes '
@@ -109,9 +122,9 @@ class ScreenNavigator {
       print('  ℹ️  No routes detected by static analysis — skipping Phase 1');
     }
 
-    // ── Phase 2: widget heuristic taps ────────────────────────────────────
-    print('\n👆 Phase 2 — widget heuristic taps\n');
-    await _phase2HeuristicTaps(startName);
+    // ── Phase 2: tap every tappable element, record new screens ───────────
+    print('\n👆 Phase 2 — universal tappable exploration\n');
+    await _phase2ExploreAll(startName);
 
     print(
         '\n✅ Navigation crawl complete — ${discoveredScreens.length} screens discovered\n');
@@ -170,402 +183,436 @@ class ScreenNavigator {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Phase 2 — heuristic taps on nav widgets
+  // Phase 2 — universal tappable exploration
   // ─────────────────────────────────────────────────────────────────────────
 
-  Future<void> _phase2HeuristicTaps(String homeScreenName) async {
-    // Gather nav widget hints from every screen discovered so far
-    // (we'll also try from the current live tree)
+  Future<void> _phase2ExploreAll(String homeScreenName) async {
+    // ── Load previously explored paths ─────────────────────────────────────
+    final resumed = await _loadExploredPaths();
+    if (resumed) {
+      final totalExplored =
+          _exploredTappables.values.fold(0, (s, v) => s + v.length);
+      print('  📂 Previous run: ${_exploredTappables.length} screens'
+          ', $totalExplored taps already explored.');
+      stdout.write(
+          '  Continue from where we left off? [Y = continue / N = restart]: ');
+      final answer = stdin.readLineSync()?.trim().toLowerCase() ?? 'y';
+      if (answer == 'n' || answer == 'no') {
+        _exploredTappables.clear();
+        print('  🔄 Starting fresh — re-exploring everything.');
+      } else {
+        print('  ▶️  Continuing — skipping already-explored taps.');
+      }
+    }
+
     final liveTree = await _captureTree();
-    await _exploreHeuristicTaps(liveTree, homeScreenName);
+    await _exploreTappables(liveTree, homeScreenName,
+        homeScreenName: homeScreenName);
+
+    // ── Save explored paths for the next run ───────────────────────────────
+    await _saveExploredPaths();
   }
 
-  Future<void> _exploreHeuristicTaps(
+  /// Explores all tappable elements on [screenName], navigating forward into
+  /// any new screens discovered and returning to [screenName] after each.
+  ///
+  /// [navDepth] is the number of forward Navigator.push steps taken from home.
+  /// It is used to limit how many times we press BACK when returning, so we
+  /// never overshoot past the target screen.
+  Future<void> _exploreTappables(
     Map<String, dynamic> tree,
     String screenName, {
     int depth = 0,
+    int navDepth = 0,
+    required String homeScreenName,
   }) async {
-    if (depth > 2) return;
     if (discoveredScreens.length >= maxScreens) return;
     if (deviceId == null || deviceId!.isEmpty) return;
 
-    final hints = _extractNavHints(tree);
+    if (_isLoginScreen(tree)) {
+      print(
+          '  🔐 Login screen detected on "$screenName" — skipping exploration.');
+      print(
+          '     Run the app while already logged in, or implement auth injection.');
+      return;
+    }
+
+    final tappables = await _getAllTappables();
+    if (tappables.isEmpty) {
+      print('  ⚠️  No tappable elements found on $screenName');
+      return;
+    }
     print(
-        '  🔍 Found ${hints.length} nav hints on $screenName (depth $depth)');
+        '  🔍 ${tappables.length} tappable elements on $screenName (depth $depth)');
 
-    final baseFiles = _sourceFiles(tree);
-
-    for (final hint in hints) {
+    for (final el in tappables) {
       if (discoveredScreens.length >= maxScreens) break;
 
-      final coords = _heuristicCoords(hint);
-      if (coords == null) {
-        print('     ↳ Cannot compute coords for ${hint.description} — skip');
+      final tapKey = '$screenName@${el.cx},${el.cy}';
+
+      // Skip if already explored in this session or a previous run.
+      if (_exploredTappables[screenName]?.contains('${el.cx},${el.cy}') ==
+          true) {
         continue;
       }
-      final (tapX, tapY) = coords;
-      print('  👆 Tapping ${hint.description} at ($tapX, $tapY)...');
+      if (_visitedScreenNames.contains(tapKey)) continue;
+      _visitedScreenNames.add(tapKey);
 
-      await AdbRunner.tap(deviceId!, tapX, tapY);
-      await Future.delayed(const Duration(milliseconds: 2000));
+      // Track for persistence.
+      (_exploredTappables[screenName] ??= {}).add('${el.cx},${el.cy}');
+
+      if (_isDangerousLabel(el.desc)) {
+        print('  ⚠️  Skipping "${el.desc}" — potentially destructive');
+        continue;
+      }
+
+      // Never tap Back/Close/Cancel — these navigate backward and would
+      // break our position tracking. We handle returning ourselves.
+      if (_isBackwardNavButton(el.desc, cx: el.cx, cy: el.cy)) {
+        continue;
+      }
+
+      final treeBefore = await _captureTree();
+      final nameBefore = _detectScreenName(treeBefore);
+      final filesBefore = _sourceFiles(treeBefore);
+
+      print('  👆 Tapping "${el.desc}" at (${el.cx}, ${el.cy})...');
+      await AdbRunner.tap(deviceId!, el.cx, el.cy);
+      await Future.delayed(const Duration(milliseconds: 1200));
 
       final newTree = await _captureTree();
+      final newName = _detectScreenName(newTree);
       final newFiles = _sourceFiles(newTree);
 
-      // Bottom nav / tab bar: each tab IS a distinct screen, but they share
-      // the same root widget (IndexedStack). Use the hint index as the
-      // unique key — don't rely on name/file changes (all tabs are loaded).
-      final isTab = hint.type == _HintType.bottomNav ||
-          hint.type == _HintType.tabBar;
-      final tabKey = '${screenName}#${hint.index}';
+      final nameChanged = newName != nameBefore;
+      final filesChanged = newFiles.difference(filesBefore).length >= 3;
 
-      if (isTab) {
-        final newName = _detectScreenName(newTree);
-        final isPushNav = newName != screenName;
+      if (nameChanged || filesChanged) {
+        final effectiveName = nameChanged
+            ? newName
+            : (_inferNameFromFiles(newFiles, filesBefore) ?? newName);
 
-        if (isPushNav) {
-          // Screen name changed → push navigation, not an IndexedStack switch.
-          if (!_visitedScreenNames.contains(newName)) {
-            print('  ✅ New screen (push via tab): $newName  ← ${hint.description}');
-            _visitedScreenNames.add(newName);
-            await _analyseAndRecord(newTree, newName,
-                navigatedVia: hint.description);
-            await _exploreHeuristicTaps(newTree, newName, depth: depth + 1);
-          }
-          await _goBack();
-          await Future.delayed(const Duration(milliseconds: 1000));
-        } else {
-          // Screen name unchanged → IndexedStack tab switch.
-          if (_visitedScreenNames.contains(tabKey)) continue;
-          _visitedScreenNames.add(tabKey);
-
-          final contentName = _detectTabContentName(newTree, hint.index) ??
-              '$screenName.Tab${hint.index + 1}';
-          if (!_visitedScreenNames.contains(contentName)) {
-            print('  ✅ Tab screen: $contentName  ← ${hint.description}');
-            _visitedScreenNames.add(contentName);
-            await _analyseAndRecord(newTree, contentName,
-                navigatedVia: hint.description);
-            await _exploreHeuristicTaps(newTree, contentName,
-                depth: depth + 1);
-          }
-        }
-      } else {
-        // Push-style navigation (NavigationRail, etc.)
-        final newName = _detectScreenName(newTree);
-        final nameChanged = newName != screenName;
-        final filesChanged = newFiles.difference(baseFiles).length >= 3 ||
-            baseFiles.difference(newFiles).length >= 3;
-        final effectiveName = (!nameChanged && filesChanged)
-            ? (_inferNameFromFiles(newFiles, baseFiles) ?? newName)
-            : newName;
-
-        if ((nameChanged || filesChanged) &&
-            !_visitedScreenNames.contains(effectiveName)) {
-          print('  ✅ New screen: $effectiveName  ← ${hint.description}');
+        if (!_visitedScreenNames.contains(effectiveName)) {
+          print('  ✅ New screen: $effectiveName  ← "${el.desc}"');
           _visitedScreenNames.add(effectiveName);
           await _analyseAndRecord(newTree, effectiveName,
-              navigatedVia: hint.description);
+              navigatedVia: el.desc);
+          // Explore this new screen as a complete sub-path.
+          await _exploreTappables(newTree, effectiveName,
+              depth: depth + 1,
+              navDepth: navDepth + 1,
+              homeScreenName: homeScreenName);
+        }
 
-          await _exploreHeuristicTaps(newTree, effectiveName,
-              depth: depth + 1);
-
-          await _goBack();
-          await Future.delayed(const Duration(milliseconds: 1000));
-
-          final backTree = await _captureTree();
-          if (_detectScreenName(backTree) != screenName) {
-            print('  ⚠️  Could not return to $screenName — stopping branch');
-            break;
-          }
-        } else if (_visitedScreenNames.contains(effectiveName)) {
-          await _goBack();
-          await Future.delayed(const Duration(milliseconds: 600));
+        // Return to [screenName].
+        // maxPresses = navDepth + 2: one press per forward step + 1 safety
+        // margin for dialogs/sheets; overshoot detection stops early if we
+        // accidentally land on home before reaching the target.
+        final returned = await _returnToScreen(screenName,
+            maxPresses: navDepth + 2, homeScreenName: homeScreenName);
+        if (!returned) {
+          print('  ⚠️  Could not return to $screenName — stopping branch');
+          return;
         }
       }
+      // No navigation → continue to next element without pressing back.
     }
-  }
-
-  /// Returns the name of the primary content page widget shown in a tab.
-  ///
-  /// [tabIndex] is used to read the Nth child of an IndexedStack (FlutterFlow
-  /// loads all tab pages simultaneously, so we must use the index rather than
-  /// looking for the "first" visible page — every search would find the same
-  /// page regardless of which tab is active).
-  String? _detectTabContentName(Map<String, dynamic> tree, int tabIndex) {
-    // Primary: find IndexedStack and return its Nth child's type.
-    final fromStack = _indexedStackChildName(tree, tabIndex);
-    if (fromStack != null && fromStack.isNotEmpty) return fromStack;
-
-    // Fallback: collect all page/screen candidates and return the Nth one.
-    final candidates = <String>[];
-    _collectTabContentNames(tree, candidates);
-    if (tabIndex < candidates.length) return candidates[tabIndex];
-    return candidates.firstOrNull;
-  }
-
-  /// Depth-first search for an IndexedStack; returns the widget type of its
-  /// child at [index], or null if not found.
-  String? _indexedStackChildName(dynamic node, int index) {
-    if (node == null) return null;
-    final type = node['widgetRuntimeType']?.toString() ?? '';
-    if (type == 'IndexedStack') {
-      final children = node['children'] as List? ?? [];
-      if (index < children.length) {
-        return _firstMeaningfulType(children[index]);
-      }
-      return null;
-    }
-    for (final child in (node['children'] as List? ?? [])) {
-      final result = _indexedStackChildName(child, index);
-      if (result != null) return result;
-    }
-    return null;
-  }
-
-  /// Returns the most specific page/screen widget type name in a subtree.
-  ///
-  /// Two-pass strategy:
-  ///   1. Prefer anything ending in `Page` or `Screen` (DFS, first match).
-  ///   2. Fall back to the first non-trivial widget name if nothing page-like found.
-  ///
-  /// This ensures FlutterFlow wrapper widgets (RootWidget, FadeWidget, etc.)
-  /// don't shadow the actual page class inside them.
-  String? _firstMeaningfulType(dynamic node) {
-    // Pass 1 — find a Page/Screen widget anywhere in this subtree.
-    final pageType = _findPageType(node);
-    if (pageType != null) return pageType;
-    // Pass 2 — any non-trivial widget name.
-    return _findAnyMeaningfulType(node);
-  }
-
-  String? _findPageType(dynamic node) {
-    if (node == null) return null;
-    final type = node['widgetRuntimeType']?.toString() ?? '';
-    if ((type.endsWith('Page') || type.endsWith('Screen')) &&
-        !type.startsWith('_') &&
-        type.length > 6) {
-      return type;
-    }
-    for (final child in (node['children'] as List? ?? [])) {
-      final result = _findPageType(child);
-      if (result != null) return result;
-    }
-    return null;
   }
 
   static const _skipTypes = {
-    'Scaffold', 'SizedBox', 'Container', 'Offstage', 'TickerMode',
-    'KeepAlive', 'RootWidget', 'FadeWidget', 'FadeInEffect',
-    'AnimatedSwitcher', 'AnimatedContainer', 'Opacity',
+    'Scaffold',
+    'SizedBox',
+    'Container',
+    'Offstage',
+    'TickerMode',
+    'KeepAlive',
+    'RootWidget',
+    'FadeWidget',
+    'FadeInEffect',
+    'AnimatedSwitcher',
+    'AnimatedContainer',
+    'Opacity',
   };
 
-  String? _findAnyMeaningfulType(dynamic node) {
-    if (node == null) return null;
-    final type = node['widgetRuntimeType']?.toString() ?? '';
-    if (type.isNotEmpty &&
-        !type.startsWith('_') &&
-        !_skipTypes.contains(type) &&
-        !type.toLowerCase().contains('navbar') &&
-        !type.toLowerCase().contains('bottomnav')) {
-      return type;
-    }
-    for (final child in (node['children'] as List? ?? [])) {
-      final result = _findAnyMeaningfulType(child);
-      if (result != null) return result;
-    }
-    return null;
-  }
-
-  void _collectTabContentNames(dynamic node, List<String> out) {
-    if (node == null) return;
-    final type = node['widgetRuntimeType']?.toString() ?? '';
-    if ((type.endsWith('Page') || type.endsWith('Screen') ||
-            type.endsWith('Widget')) &&
-        !type.startsWith('_') &&
-        type != 'Scaffold' &&
-        type != 'ScreenUtilInit' &&
-        !type.toLowerCase().contains('navbar') &&
-        !type.toLowerCase().contains('bottomnav') &&
-        !type.toLowerCase().contains('navbarwidget')) {
-      out.add(type);
-    }
-    for (final child in (node['children'] as List? ?? [])) {
-      _collectTabContentNames(child, out);
-    }
-  }
-
   // ─────────────────────────────────────────────────────────────────────────
-  // Nav hint extraction
+  // Exact tappable element discovery via Android accessibility layer
   // ─────────────────────────────────────────────────────────────────────────
 
-  List<_NavHint> _extractNavHints(Map<String, dynamic> tree) {
-    final hints = <_NavHint>[];
-    _walkForNavHints(tree, hints);
-    // Deduplicate by description
-    final seen = <String>{};
-    return hints.where((h) => seen.add(h.description)).toList();
-  }
+  /// Returns all clickable elements currently visible on screen with their
+  /// exact pixel centres and labels, sorted top-to-bottom left-to-right.
+  ///
+  /// Uses `adb shell uiautomator dump` — no screen-size guessing, no widget
+  /// tree parsing, works on any Flutter version and any device.
+  Future<List<({int cx, int cy, String desc})>> _getAllTappables() async {
+    if (deviceId == null || deviceId!.isEmpty) return [];
+    try {
+      await AdbRunner.run(
+          deviceId!, ['shell', 'uiautomator', 'dump', '/sdcard/dangi_ui.xml']);
+      final catResult = await AdbRunner.run(
+          deviceId!, ['shell', 'cat', '/sdcard/dangi_ui.xml']);
+      await AdbRunner.run(
+          deviceId!, ['shell', 'rm', '-f', '/sdcard/dangi_ui.xml']);
+      final xml = catResult.stdout.toString().trim();
+      if (xml.isEmpty || !xml.startsWith('<')) return [];
 
-  void _walkForNavHints(dynamic node, List<_NavHint> hints) {
-    if (node == null) return;
-    final type = node['widgetRuntimeType']?.toString() ?? '';
+      final boundsRe = RegExp(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"');
+      final descRe = RegExp(r'content-desc="([^"]*)"');
+      final textRe = RegExp(r'\btext="([^"]*)"');
+      final tagRe = RegExp(r'<node\b[^>]+>');
 
-    // Also check source file — catches custom NavBar widgets regardless of class name
-    final sourceFile = (node['creationLocation']?['file'] ?? '').toString().split('/').last.toLowerCase();
-    final isNavFile = sourceFile.contains('nav_bar') ||
-        sourceFile.contains('navbar') ||
-        sourceFile.contains('bottom_bar') ||
-        sourceFile.contains('bottombar');
-
-    final isStandardBottomNav =
-        type == 'BottomNavigationBar' || type == 'NavigationBar';
-    final isCustomBottomNav = !isStandardBottomNav &&
-        (isNavFile ||
-            type.toLowerCase().contains('navbar') ||
-            type.toLowerCase().contains('bottomnav') ||
-            type.toLowerCase().contains('bottombar') ||
-            type.toLowerCase().contains('navbarwidget'));
-
-    if (isStandardBottomNav || isCustomBottomNav) {
-      // Standard: count BottomNavigationBarItem / NavigationDestination children
-      // Custom: count GestureDetector / InkWell / tappable direct children
-      int count = _countDescendantsOfType(
-          node, ['BottomNavigationBarItem', 'NavigationDestination']);
-      if (count == 0) {
-        count = _countDirectTappableChildren(node);
+      final seen = <String>{};
+      final result = <({int cx, int cy, String desc})>[];
+      for (final m in tagRe.allMatches(xml)) {
+        final tag = m.group(0)!;
+        if (!tag.contains('clickable="true"')) continue;
+        final bm = boundsRe.firstMatch(tag);
+        if (bm == null) continue;
+        final x1 = int.parse(bm.group(1)!);
+        final y1 = int.parse(bm.group(2)!);
+        final x2 = int.parse(bm.group(3)!);
+        final y2 = int.parse(bm.group(4)!);
+        if ((x2 - x1) < 20 || (y2 - y1) < 20) continue;
+        final cx = (x1 + x2) ~/ 2;
+        final cy = (y1 + y2) ~/ 2;
+        if (!seen.add('$cx,$cy')) continue;
+        final rawDesc = descRe.firstMatch(tag)?.group(1)?.trim() ?? '';
+        final rawText = textRe.firstMatch(tag)?.group(1)?.trim() ?? '';
+        final desc = rawDesc.isNotEmpty
+            ? rawDesc
+            : rawText.isNotEmpty
+                ? rawText
+                : 'tap($cx,$cy)';
+        result.add((cx: cx, cy: cy, desc: desc));
       }
-      final n = count > 0 ? count : 3; // safe default for custom navbars
-      for (var i = 0; i < n; i++) {
-        hints.add(_NavHint(
-          type: _HintType.bottomNav,
-          description: '$type[item $i/$n]',
-          index: i,
-          total: n,
-        ));
-      }
-      return;
-    }
-
-    if (type == 'TabBar' ||
-        type.toLowerCase().contains('tabbar') ||
-        type.toLowerCase().contains('tabwidget')) {
-      int count = _countDescendantsOfType(node, ['Tab']);
-      if (count == 0) count = _countDirectTappableChildren(node);
-      final n = count > 0 ? count : 3;
-      for (var i = 0; i < n; i++) {
-        hints.add(_NavHint(
-          type: _HintType.tabBar,
-          description: '${isStandardBottomNav ? "TabBar" : type}[tab $i/$n]',
-          index: i,
-          total: n,
-        ));
-      }
-      return;
-    }
-
-    if (type == 'NavigationRail') {
-      final count =
-          _countDescendantsOfType(node, ['NavigationRailDestination']);
-      final n = count > 0 ? count : 3;
-      for (var i = 0; i < n; i++) {
-        hints.add(_NavHint(
-          type: _HintType.navigationRail,
-          description: 'NavigationRail[item $i/$n]',
-          index: i,
-          total: n,
-        ));
-      }
-      return;
-    }
-
-    for (final child in (node['children'] as List? ?? [])) {
-      _walkForNavHints(child, hints);
+      result.sort(
+          (a, b) => a.cy != b.cy ? a.cy.compareTo(b.cy) : a.cx.compareTo(b.cx));
+      return _deduplicateListItems(result);
+    } catch (_) {
+      return [];
     }
   }
 
-  /// BFS through subtree levels until finding tappable widgets, then count
-  /// those at the first level where any are found.
-  int _countDirectTappableChildren(dynamic node) {
-    const tappable = {
-      'GestureDetector',
-      'InkWell',
-      'InkResponse',
-      'TextButton',
-      'ElevatedButton',
-      'IconButton',
-      'CupertinoButton',
+  /// Detects data-driven list items (e.g. ListView.builder rows) and removes
+  /// all but the first from each group, so we explore one representative item
+  /// rather than wasting taps on every row of the same list.
+  ///
+  /// Detection: elements whose label contains a structural newline (`&#10;` or
+  /// `\n` with enough text to be multi-line data) are candidates. Those sharing
+  /// the same X-bucket (within ±60px) form a group; all but the first are
+  /// skipped.  The first item is still tapped and explored fully.
+  List<({int cx, int cy, String desc})> _deduplicateListItems(
+      List<({int cx, int cy, String desc})> items) {
+    if (items.length < 3) return items;
+
+    // Collect list-item candidates: multi-line data-driven labels.
+    final candidates = items.where((e) {
+      final isMultiLine = e.desc.contains('&#10;') || e.desc.contains('\n');
+      return isMultiLine && e.desc.length > 15;
+    }).toList();
+
+    if (candidates.length < 2) return items;
+
+    // Group by X-bucket (same column → same list).
+    const xBucketSize = 120;
+    final groups = <int, List<({int cx, int cy, String desc})>>{};
+    for (final item in candidates) {
+      final bucket = (item.cx ~/ xBucketSize) * xBucketSize;
+      (groups[bucket] ??= []).add(item);
+    }
+
+    final skipCoords = <String>{};
+    for (final group in groups.values) {
+      if (group.length < 2) continue;
+      group.sort((a, b) => a.cy.compareTo(b.cy));
+      // Skip everything after the first item.
+      for (var i = 1; i < group.length; i++) {
+        skipCoords.add('${group[i].cx},${group[i].cy}');
+      }
+      final firstName = group.first.desc.split('&#10;').first.trim();
+      print(
+          '  📋 ListView group (${group.length} items) — exploring only first: "$firstName"');
+    }
+
+    if (skipCoords.isEmpty) return items;
+    return items.where((e) => !skipCoords.contains('${e.cx},${e.cy}')).toList();
+  }
+
+  static const _dangerousLabels = {
+    'delete',
+    'remove',
+    'logout',
+    'log out',
+    'sign out',
+    'signout',
+    'purchase',
+    'buy',
+    'pay now',
+    'uninstall',
+    'clear all',
+    'reset',
+  };
+
+  bool _isDangerousLabel(String desc) {
+    final lower = desc.toLowerCase();
+    return _dangerousLabels.any((label) => lower.contains(label));
+  }
+
+  /// Returns true if this element is a backward-navigation control.
+  /// We never tap these — we return ourselves via the system back key
+  /// ([_returnToScreen] → [_goBack] → KEYCODE_BACK), which is always correct.
+  ///
+  /// Detection uses two signals:
+  /// 1. Label match against known back-button semantic labels (Flutter icon
+  ///    names, standard Android/iOS accessibility labels, common symbols).
+  /// 2. AppBar back-button position: top-left corner of the screen.
+  bool _isBackwardNavButton(String desc, {required int cx, required int cy}) {
+    final lower = desc.toLowerCase().trim();
+
+    // Flutter Material + Cupertino icon semantic labels used as back buttons.
+    const backLabels = {
+      // Human-readable labels
+      'back', 'close', 'cancel', 'dismiss', 'navigate up', 'go back',
+      'return', 'exit', 'done',
+      // Flutter icon names (Icons.xxx.name exposed as semanticLabel or tooltip)
+      'arrow_back', 'arrow_back_ios', 'arrow_back_ios_new',
+      'arrow_back_outlined', 'arrow_back_rounded', 'arrow_back_sharp',
+      'chevron_left', 'chevron_left_outlined',
+      'chevron_left_rounded', 'chevron_left_sharp',
+      'keyboard_arrow_left', 'keyboard_arrow_left_outlined',
+      'keyboard_backspace',
+      'close_outlined', 'close_rounded', 'close_sharp',
+      'clear', 'clear_outlined', 'clear_rounded', 'clear_sharp',
+      'cancel_outlined', 'cancel_rounded', 'cancel_sharp',
+      // Unicode arrow/close symbols sometimes used as label text
+      '←', '‹', '«', '×', '✕', '✖', '⬅',
     };
-    var currentLevel = (node['children'] as List? ?? []).cast<dynamic>();
-    while (currentLevel.isNotEmpty) {
-      int count = 0;
-      for (final child in currentLevel) {
-        final t = child['widgetRuntimeType']?.toString() ?? '';
-        if (tappable.contains(t)) count++;
-      }
-      if (count > 0) return count;
-      final nextLevel = <dynamic>[];
-      for (final child in currentLevel) {
-        nextLevel.addAll((child['children'] as List? ?? []).cast<dynamic>());
-      }
-      currentLevel = nextLevel;
+
+    if (backLabels.contains(lower)) return true;
+
+    // AppBar back button: always top-left, small hit area.
+    // Catches empty/short labels AND our own "tap(cx,cy)" fallback label
+    // generated when uiautomator returns no accessibility text.
+    // An unlabeled element in the top-left corner is almost always a back icon.
+    if (cx < 200 && cy < 380) {
+      final isUnlabeled = lower.isEmpty ||
+          lower.length <= 2 ||
+          RegExp(r'^tap\(\d+,\d+\)$').hasMatch(lower);
+      if (isUnlabeled) return true;
     }
-    return 0;
+
+    return false;
   }
 
-  int _countDescendantsOfType(dynamic node, List<String> types) {
-    if (node == null) return 0;
-    int count = 0;
+  /// Presses BACK until [targetScreenName] is the current screen, or
+  /// [maxPresses] attempts are exhausted.
+  ///
+  /// If [homeScreenName] is provided and we land there before reaching the
+  /// target, we stop immediately — we've overshot (e.g. a tab-switch brought
+  /// us to a sibling screen, not a child screen, so back goes home not back
+  /// to the target).
+  Future<bool> _returnToScreen(
+    String targetScreenName, {
+    int maxPresses = 3,
+    String? homeScreenName,
+  }) async {
+    for (var i = 0; i < maxPresses; i++) {
+      final tree = await _captureTree();
+      final current = _detectScreenName(tree);
+      if (current == targetScreenName) return true;
+      // Overshot: we're at home but the target isn't home — pressing more
+      // back won't help, we'd just exit the app.
+      if (homeScreenName != null &&
+          current == homeScreenName &&
+          targetScreenName != homeScreenName) {
+        return false;
+      }
+      await _goBack();
+      await Future.delayed(const Duration(milliseconds: 800));
+    }
+    final finalTree = await _captureTree();
+    return _detectScreenName(finalTree) == targetScreenName;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Explored paths persistence (Layer 3 — app-specific knowledge)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  File? get _exploredPathsFile {
+    if (projectPath == null) return null;
+    return File('$projectPath/.dangi_doctor/explored_paths.json');
+  }
+
+  /// Loads previously explored tappable paths from disk.
+  /// Returns true if any data was loaded.
+  Future<bool> _loadExploredPaths() async {
+    final file = _exploredPathsFile;
+    if (file == null || !file.existsSync()) return false;
+    try {
+      final raw = jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
+      final screens = raw['screens'] as Map<String, dynamic>? ?? {};
+      for (final entry in screens.entries) {
+        _exploredTappables[entry.key] =
+            Set<String>.from(entry.value as List<dynamic>);
+      }
+      return _exploredTappables.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Saves the current session's explored tappable paths to disk.
+  Future<void> _saveExploredPaths() async {
+    final file = _exploredPathsFile;
+    if (file == null) return;
+    try {
+      file.parent.createSync(recursive: true);
+      final data = {
+        'lastRun': DateTime.now().toIso8601String(),
+        'screens': {
+          for (final e in _exploredTappables.entries)
+            e.key: e.value.toList()..sort(),
+        },
+      };
+      file.writeAsStringSync(const JsonEncoder.withIndent('  ').convert(data));
+      print('  💾 Explored paths saved for next run.');
+    } catch (_) {}
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Login-screen detection
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /// Returns true when the widget tree looks like a login/sign-in screen.
+  ///
+  /// Heuristic: two or more TextFormFields (email + password) plus at least
+  /// one tappable widget whose semantic label or value contains "login",
+  /// "sign in", or "continue".
+  bool _isLoginScreen(Map<String, dynamic> tree) {
+    int textFields = 0;
+    bool hasLoginButton = false;
+    _scanForLoginWidgets(tree, (type, label) {
+      if (type == 'TextFormField' || type == 'TextField') textFields++;
+      final l = label.toLowerCase();
+      if (l.contains('login') ||
+          l.contains('sign in') ||
+          l.contains('log in') ||
+          l.contains('continue') ||
+          l.contains('otp') ||
+          l.contains('verify')) {
+        hasLoginButton = true;
+      }
+    });
+    return textFields >= 1 && hasLoginButton;
+  }
+
+  void _scanForLoginWidgets(
+      dynamic node, void Function(String type, String label) onWidget) {
+    if (node == null) return;
     final type = node['widgetRuntimeType']?.toString() ?? '';
-    if (types.contains(type)) count++;
+    final label = (node['description'] ?? node['value'] ?? '').toString();
+    onWidget(type, label);
     for (final child in (node['children'] as List? ?? [])) {
-      count += _countDescendantsOfType(child, types);
-    }
-    return count;
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Heuristic coordinate calculation
-  // ─────────────────────────────────────────────────────────────────────────
-
-  /// Convert a [_NavHint] to physical screen coordinates (adb pixels).
-  ///
-  /// Layout assumptions (standard Material Design):
-  ///   - BottomNavigationBar height ≈ 56 dp → center at screenH - 28dp
-  ///   - TabBar height ≈ 48 dp, placed below AppBar (≈56dp) + StatusBar (24dp)
-  ///     → center at ~104 dp from top
-  ///   - NavigationRail width ≈ 72 dp, items spaced ~56dp apart from top
-  ///
-  /// Physical px = logical dp * DPR. We use screenH/W directly (already physical).
-  (int, int)? _heuristicCoords(_NavHint hint) {
-    if (_screenSize == null) return null;
-    final (screenW, screenH) = _screenSize!;
-
-    switch (hint.type) {
-      case _HintType.bottomNav:
-        // Items evenly spaced across full width; bar at bottom ~56dp
-        // physical pixels: bar center y ≈ screenH - (56/2 * dpr)
-        // We don't know dpr precisely but 56dp on a 1080p phone at 3x = 168px
-        // Use screenH - 84 (half the bar height in px at ~3x dpr)
-        final barCenterY = screenH - 84;
-        final itemCenterX =
-            ((screenW * (hint.index + 0.5)) / hint.total).toInt();
-        return (itemCenterX, barCenterY.clamp(0, screenH - 1));
-
-      case _HintType.tabBar:
-        // Status bar ≈ 72px, AppBar ≈ 168px, TabBar center ≈ 72+168+72=312px
-        // Empirically ~280–330px works well on most phones.
-        const tabBarCenterY = 300;
-        final tabCenterX =
-            ((screenW * (hint.index + 0.5)) / hint.total).toInt();
-        return (tabCenterX, tabBarCenterY.clamp(0, screenH - 1));
-
-      case _HintType.navigationRail:
-        // Rail on left side, items stacked vertically ~56dp apart from top
-        // Top item center: status bar (72px) + app bar (168px) + 28px ≈ 268px
-        const railCenterX = 36; // half of 72dp rail at 3x = ~108px / 3
-        final itemCenterY = 268 + (hint.index * 168); // 56dp * 3 between items
-        return (railCenterX, itemCenterY.clamp(0, screenH - 1));
+      _scanForLoginWidgets(child, onWidget);
     }
   }
 
@@ -673,12 +720,26 @@ class ScreenNavigator {
   void _walkForScreenName(dynamic node, void Function(String) onScreen) {
     if (node == null) return;
     final type = node['widgetRuntimeType']?.toString() ?? '';
-    if ((type.contains('Page') ||
-            type.contains('Screen') ||
-            type.contains('Widget')) &&
+    final tl = type.toLowerCase();
+    // Use endsWith, not contains — custom screens end with Page/Screen/Widget.
+    // Framework widgets like PageView, PagedLayoutBuilder, PageController,
+    // PagedSliverList all CONTAIN "Page" but never END with it.
+    // Using contains caused PageView to be detected as the home screen.
+    if ((type.endsWith('Page') ||
+            type.endsWith('Screen') ||
+            type.endsWith('Widget')) &&
         !type.startsWith('_') &&
         type != 'Scaffold' &&
-        type != 'ScreenUtilInit') {
+        type != 'ScreenUtilInit' &&
+        !_skipTypes.contains(type) &&
+        // Exclude navigation-container widgets — they wrap page content but
+        // are not content screens themselves. Without this, NavBarWidget
+        // appears after page content in the GoRouter Navigator DFS traversal
+        // and overwrites the real screen name as _detectScreenName runs.
+        !tl.contains('navbar') &&
+        !tl.contains('bottomnav') &&
+        !tl.contains('bottombar') &&
+        !tl.contains('navwidget')) {
       onScreen(type);
     }
     for (final child in (node['children'] as List? ?? [])) {
@@ -733,7 +794,9 @@ class ScreenNavigator {
       args: {'groupName': 'dangi_nav', 'isSummaryTree': 'true'},
     );
     final json = response.json ?? {};
-    if (json.containsKey('result')) return json['result'] as Map<String, dynamic>;
+    if (json.containsKey('result')) {
+      return json['result'] as Map<String, dynamic>;
+    }
     if (json.containsKey('value')) return json['value'] as Map<String, dynamic>;
     return json;
   }
@@ -761,24 +824,4 @@ class ScreenNavigator {
     }
     print('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   }
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// Internal types
-// ─────────────────────────────────────────────────────────────────────────
-
-enum _HintType { bottomNav, tabBar, navigationRail }
-
-class _NavHint {
-  final _HintType type;
-  final String description;
-  final int index;
-  final int total;
-
-  const _NavHint({
-    required this.type,
-    required this.description,
-    required this.index,
-    required this.total,
-  });
 }

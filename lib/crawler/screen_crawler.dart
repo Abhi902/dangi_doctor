@@ -161,8 +161,9 @@ class ScreenCrawler {
     );
 
     final json = response.json ?? {};
-    if (json.containsKey('result'))
+    if (json.containsKey('result')) {
       return json['result'] as Map<String, dynamic>;
+    }
     if (json.containsKey('value')) return json['value'] as Map<String, dynamic>;
     return json;
   }

@@ -1,3 +1,25 @@
+## 0.2.0
+
+- **Phase 2 navigation completely rewritten** — replaced nav-bar heuristic detection with
+  universal tappable exploration. Uses `adb shell uiautomator dump` to get exact pixel bounds
+  for every clickable element; taps each one and detects new screens by root widget type change
+  or significant source-file delta. Works on any Flutter app with no hardcoded assumptions.
+- ListView deduplication: elements with multi-line data labels (e.g. `&#10;` entities) are
+  grouped by screen column; only the first item per group is tapped, preventing wasted taps on
+  long ListView.builder lists.
+- Depth-aware back navigation: `navDepth` tracks forward push steps from home; back-presses
+  are capped at `navDepth + 2` so the crawler never overshoots past the target screen.
+- Overshoot detection: `_returnToScreen` stops immediately if it lands on the home screen
+  before reaching the intended target (fixes cascade failures from tab-switch navigation).
+- Back-button filtering now catches unlabelled AppBar icons — elements at top-left corner
+  (cx < 200, cy < 380) with no text or auto-generated `tap(cx,cy)` label are skipped.
+- Explored paths persisted to `.dangi_doctor/explored_paths.json`; subsequent runs offer
+  continue-from-last-run or restart-fresh options.
+- Fixed broken `example/` file (was importing nonexistent `package:cli/cli.dart`).
+- Fixed all `dart analyze` warnings; `dart format` applied throughout.
+- `lib/cli.dart` now exports the real public API (`DiscoveredScreen`, `ScreenNavigator`,
+  `AppAnalysis`, `AppAnalyser`).
+
 ## 0.1.0
 
 - Initial release.

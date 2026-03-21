@@ -101,15 +101,10 @@ class HtmlReportGenerator {
     final scoreColor = _scoreColor(score);
     final totalIssues = screens.fold(0, (s, sc) => s + sc.issues.length);
     final errorCount = screens.fold(
-        0,
-        (s, sc) =>
-            s + sc.issues.where((i) => i.severity == 'error').length);
-    final warnCount = screens.fold(
-        0,
-        (s, sc) =>
-            s + sc.issues.where((i) => i.severity == 'warning').length);
-    final dateStr =
-        '${timestamp.day}/${timestamp.month}/${timestamp.year} '
+        0, (s, sc) => s + sc.issues.where((i) => i.severity == 'error').length);
+    final warnCount = screens.fold(0,
+        (s, sc) => s + sc.issues.where((i) => i.severity == 'warning').length);
+    final dateStr = '${timestamp.day}/${timestamp.month}/${timestamp.year} '
         '${timestamp.hour.toString().padLeft(2, '0')}:'
         '${timestamp.minute.toString().padLeft(2, '0')}';
 

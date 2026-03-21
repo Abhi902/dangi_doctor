@@ -100,14 +100,19 @@ class ProjectFingerprint {
     for (final file in dartFiles.take(50)) {
       try {
         final content = file.readAsStringSync();
-        if (content.contains('ChangeNotifier') || content.contains('Provider('))
+        if (content.contains('ChangeNotifier') ||
+            content.contains('Provider(')) {
           providerCount++;
-        if (content.contains('Bloc') || content.contains('BlocBuilder'))
+        }
+        if (content.contains('Bloc') || content.contains('BlocBuilder')) {
           blocCount++;
-        if (content.contains('Riverpod') || content.contains('WidgetRef'))
+        }
+        if (content.contains('Riverpod') || content.contains('WidgetRef')) {
           riverpodCount++;
-        if (content.contains('GetX') || content.contains('GetBuilder'))
+        }
+        if (content.contains('GetX') || content.contains('GetBuilder')) {
           getxCount++;
+        }
       } catch (_) {}
     }
 

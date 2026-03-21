@@ -70,7 +70,7 @@ class ScreenPerformance {
     print('\n┌─────────────────────────────────────────────┐');
     print('│  PERFORMANCE — $screenName');
     print('├─────────────────────────────────────────────┤');
-    print('│  Grade         : ${gradeEmoji} $grade');
+    print('│  Grade         : $gradeEmoji $grade');
     print('│  Total frames  : $totalFrames');
     print('│  Janky frames  : $jankyFrames (${jankRate.toStringAsFixed(1)}%)');
     print('│  Avg build     : ${avgBuildMs.toStringAsFixed(2)}ms  '

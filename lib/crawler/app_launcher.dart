@@ -115,7 +115,7 @@ class AppLauncher {
         'run',
         '-d',
         deviceId,
-        '--observatory-port=$port',
+        '--vm-service-port=$port',
         '--disable-service-auth-codes',
       ],
       workingDirectory: projectPath,
@@ -170,7 +170,7 @@ class AppLauncher {
 
           // Ensure ends with /ws
           if (!url.endsWith('/ws')) {
-            url = url.replaceAll(RegExp(r'/?$'), '') + '/ws';
+            url = '${url.replaceAll(RegExp(r'/?$'), '')}/ws';
           }
 
           spinner.stop('✅ App launched successfully');

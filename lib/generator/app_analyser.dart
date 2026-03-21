@@ -37,7 +37,9 @@ class AppAnalyser {
     final appStateInfo = _analyseAppState();
     final mainInfo = _analyseMain();
     final firebaseOptions = _detectFirebaseOptions();
-    final goRouterRoutes = _detectRoutes();
+    final detectedRoutes = _detectRoutes();
+    final routerType = _detectRouterType();
+    final routerVariable = _detectRouterVariable();
     final stateManagement = _detectStateManagement();
     final knownRisks = _detectKnownRisks();
 
@@ -54,7 +56,9 @@ class AppAnalyser {
       appStateEmailField: appStateInfo['emailField'],
       hasFirebase: firebaseOptions != null,
       firebaseOptionsImport: firebaseOptions,
-      routes: goRouterRoutes,
+      routes: detectedRoutes,
+      routerType: routerType,
+      routerVariable: routerVariable,
       stateManagement: stateManagement,
       knownRisks: knownRisks,
     );
@@ -149,8 +153,15 @@ class AppAnalyser {
     }
 
     // Find token/auth fields
-    String? tokenField = _findStateField(content,
-        ['token', 'authToken', 'accessToken', 'jwtToken', 'idToken', 'bearerToken', 'apiToken']);
+    String? tokenField = _findStateField(content, [
+      'token',
+      'authToken',
+      'accessToken',
+      'jwtToken',
+      'idToken',
+      'bearerToken',
+      'apiToken'
+    ]);
     String? jwtField =
         _findStateField(content, ['jwtToken', 'jwt', 'bearerToken']);
     String? userIdField =
@@ -242,36 +253,98 @@ class AppAnalyser {
     return null;
   }
 
-  List<String> _detectRoutes() {
-    final routes = <String>[];
+  /// Detect the navigation router type from pubspec.yaml dependencies.
+  String _detectRouterType() {
+    final pubspec = File('$projectPath/pubspec.yaml');
+    if (!pubspec.existsSync()) return 'unknown';
+    final content = pubspec.readAsStringSync();
+    if (content.contains('go_router')) return 'gorouter';
+    if (RegExp(r'\bget:\s').hasMatch(content) || content.contains('get_x')) {
+      return 'getx';
+    }
+    if (content.contains('auto_route')) return 'autoroute';
+    if (content.contains('beamer')) return 'beamer';
+    return 'navigator1';
+  }
 
-    // Search for GoRouter route definitions
+  /// Detect the top-level GoRouter/navigatorKey variable name from source.
+  String? _detectRouterVariable() {
     final libDir = Directory('$projectPath/lib');
-    if (!libDir.existsSync()) return routes;
+    if (!libDir.existsSync()) return null;
 
-    final routerFiles = libDir
+    final patterns = [
+      RegExp(r'(?:final|late|var)\s+(\w+)\s*=\s*GoRouter\s*\('),
+      RegExp(r'(?:final|late|var)\s+(\w+)\s*=\s*RouterConfig'),
+      RegExp(r'GlobalKey<NavigatorState>\(\)\s*;\s*\n.*?(\w+)\s*='),
+    ];
+
+    for (final file in libDir
         .listSync(recursive: true)
         .whereType<File>()
-        .where((f) =>
-            f.path.endsWith('.dart') &&
-            (f.path.contains('router') ||
-                f.path.contains('route') ||
-                f.path.contains('nav')))
-        .toList();
-
-    for (final file in routerFiles) {
+        .where((f) => f.path.endsWith('.dart'))) {
       try {
         final content = file.readAsStringSync();
-        // Find GoRoute(path: '...', name: '...')
-        final pathMatches = RegExp(r"name:\s*'([^']+)'").allMatches(content);
-        for (final m in pathMatches) {
-          final name = m.group(1)!;
-          if (!routes.contains(name)) routes.add(name);
+        for (final p in patterns) {
+          final m = p.firstMatch(content);
+          if (m != null) return m.group(1);
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  /// Scan the entire lib/ directory for route paths across all major router types.
+  List<String> _detectRoutes() {
+    final routes = <String>{};
+    final libDir = Directory('$projectPath/lib');
+    if (!libDir.existsSync()) return [];
+
+    // Patterns that capture a route identifier from various router declarations.
+    // GoRouter may use relative paths (e.g. 'loginPage') or absolute ('/login').
+    // We capture the value and normalise to an absolute path where needed.
+    final pathPatterns = [
+      // GoRouter: name: 'PracticePage'  — preferred for goNamed() navigation
+      RegExp(r"name:\s*'([A-Z][a-zA-Z0-9_]+)'"),
+      RegExp(r'name:\s*"([A-Z][a-zA-Z0-9_]+)"'),
+      // GoRouter / any: path: '/home' or path: 'home'
+      RegExp(r"path:\s*'([a-zA-Z0-9_/][^']*)'"),
+      RegExp(r'path:\s*"([a-zA-Z0-9_/][^"]*)"'),
+      // GetX: GetPage(name: '/home')
+      RegExp(r"GetPage\s*\([^)]*name:\s*'(/[^']+)'"),
+      RegExp(r'GetPage\s*\([^)]*name:\s*"(/[^"]+)"'),
+      // Navigator 1.0: pushNamed('/home')
+      RegExp(r"pushNamed\s*\(\s*'(/[^']+)'"),
+      RegExp(r'pushNamed\s*\(\s*"(/[^"]+)"'),
+      // AutoRoute: @AutoRoute(path: '/home')
+      RegExp(r"@\w*[Rr]oute\s*\([^)]*path:\s*'([^']+)'"),
+      RegExp(r'@\w*[Rr]oute\s*\([^)]*path:\s*"([^"]+)"'),
+      // Beamer: pathPatterns: ['/home']
+      RegExp(r"pathPatterns:\s*\[[^\]]*'(/[^']+)'"),
+      RegExp(r'pathPatterns:\s*\[[^\]]*"(/[^"]+)"'),
+    ];
+
+    for (final file in libDir
+        .listSync(recursive: true)
+        .whereType<File>()
+        .where((f) => f.path.endsWith('.dart'))) {
+      try {
+        final content = file.readAsStringSync();
+        for (final pattern in pathPatterns) {
+          for (final m in pattern.allMatches(content)) {
+            final route = m.group(1)!;
+            // Skip empty, single-char, template params, and obvious non-routes
+            if (route.length > 1 &&
+                !route.contains(r'$') &&
+                route != '_initialize' &&
+                route != 'initial') {
+              routes.add(route);
+            }
+          }
         }
       } catch (_) {}
     }
 
-    return routes;
+    return routes.toList();
   }
 
   // ─── Known-risk static analysis ──────────────────────────────────────────
@@ -324,8 +397,18 @@ class AppAnalyser {
         .allMatches(didChange['body'] as String)
         .map((m) => m.group(1)!)
         .where((m) => !const {
-              'super', 'if', 'while', 'for', 'switch', 'setState',
-              'print', 'log', 'assert', 'mounted', 'context', 'of',
+              'super',
+              'if',
+              'while',
+              'for',
+              'switch',
+              'setState',
+              'print',
+              'log',
+              'assert',
+              'mounted',
+              'context',
+              'of',
             }.contains(m))
         .toSet();
 
@@ -523,8 +606,7 @@ class AppAnalyser {
         line: awaitLine > 0 ? awaitLine + 1 : startLine + 1,
         fieldName: 'await',
         callerMethod: 'build',
-        description:
-            '`await` is used directly inside `build()` without a '
+        description: '`await` is used directly inside `build()` without a '
             'FutureBuilder/StreamBuilder. Build methods must be synchronous; '
             'async calls here are silently ignored and cause stale UI.',
         suggestedFix: 'Wrap async data with FutureBuilder:\n'
@@ -625,6 +707,12 @@ class AppAnalysis {
   final bool hasFirebase;
   final String? firebaseOptionsImport;
   final List<String> routes;
+
+  /// 'gorouter' | 'getx' | 'autoroute' | 'beamer' | 'navigator1' | 'unknown'
+  final String routerType;
+
+  /// Top-level variable name holding the router instance (e.g. '_router').
+  final String? routerVariable;
   final String stateManagement;
   final List<KnownRisk> knownRisks;
 
@@ -642,6 +730,8 @@ class AppAnalysis {
     required this.hasFirebase,
     required this.firebaseOptionsImport,
     required this.routes,
+    required this.routerType,
+    required this.routerVariable,
     required this.stateManagement,
     required this.knownRisks,
   });

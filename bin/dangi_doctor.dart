@@ -2,7 +2,9 @@ import 'dart:io';
 import 'package:dangi_doctor/ai/knowledge/ai_providers.dart';
 import 'package:dangi_doctor/ai/knowledge/project_fingerprint.dart';
 import 'package:dangi_doctor/crawler/screen_navigator.dart';
+import 'package:dangi_doctor/generator/app_analyser.dart';
 import 'package:dangi_doctor/crawler/app_launcher.dart';
+import 'package:dangi_doctor/crawler/adb_runner.dart';
 import 'package:dangi_doctor/crawler/screen_crawler.dart';
 import 'package:dangi_doctor/crawler/vm_locator.dart';
 import 'package:dangi_doctor/generator/test_generator.dart';
@@ -62,6 +64,10 @@ void main() async {
     }
   }
 
+  // Detect device ID for ADB taps (Phase 2) — covers all connection paths:
+  // launched via option 1, pasted URL via option 2, or auto-connected from cache.
+  deviceId ??= await _detectAdbDevice();
+
   if (wsUrl.isEmpty) {
     print('❌ No VM service URL. Exiting.');
     exit(1);
@@ -79,12 +85,21 @@ void main() async {
     // Layer 3 — always generate project fingerprint, regardless of AI provider
     await ProjectFingerprint(projectPath: projectPath).loadOrScan();
 
+    // Static analysis — detect routes, router type, known risks
+    print('\n🔬 Running static analysis...');
+    final appAnalysis = await AppAnalyser(projectPath: projectPath).analyse();
+    print('  ✅ Router: ${appAnalysis.routerType}'
+        '${appAnalysis.routerVariable != null ? ' (var: ${appAnalysis.routerVariable})' : ''}'
+        ' — ${appAnalysis.routes.length} routes');
+
     // Full app navigation crawl
     final navigator = ScreenNavigator(
       vmService: crawler.vmService,
       isolateId: crawler.isolateId,
       deviceId: deviceId ?? '',
-      maxScreens: 10,
+      maxScreens: 20,
+      analysis: appAnalysis,
+      projectPath: projectPath,
     );
 
     final screens = await navigator.walkAllScreens();
@@ -151,6 +166,40 @@ void main() async {
     await crawler.disconnect();
     await launcher?.dispose();
   }
+}
+
+/// Auto-detect the connected Android device via `adb devices`.
+/// Returns the device ID, or null if none found / multiple require user choice.
+Future<String?> _detectAdbDevice() async {
+  try {
+    final result = await AdbRunner.runGlobal(['devices']);
+    final lines = result.stdout
+        .toString()
+        .split('\n')
+        .where((l) => l.trim().isNotEmpty && !l.startsWith('List'))
+        .where((l) => l.contains('\tdevice'))
+        .toList();
+    if (lines.isEmpty) {
+      print(
+          '  ⚠️  No ADB devices found — Phase 2 (widget taps) will be skipped');
+      return null;
+    }
+    if (lines.length == 1) {
+      final id = lines.first.split('\t').first.trim();
+      print('  📱 Auto-detected device: $id');
+      return id;
+    }
+    print('  Multiple ADB devices connected:');
+    for (var i = 0; i < lines.length; i++) {
+      print('    ${i + 1}. ${lines[i].split('\t').first.trim()}');
+    }
+    stdout.write('  Pick device (1-${lines.length}): ');
+    final pick = int.tryParse(stdin.readLineSync()?.trim() ?? '1') ?? 1;
+    if (pick >= 1 && pick <= lines.length) {
+      return lines[pick - 1].split('\t').first.trim();
+    }
+  } catch (_) {}
+  return null;
 }
 
 /// Resolve the Flutter project path.

@@ -193,17 +193,23 @@ class TreeAnalyser {
 
     if (errors.isNotEmpty) {
       print('🔴 ERRORS (${errors.length})');
-      for (final i in errors) print('  $i');
+      for (final i in errors) {
+        print('  $i');
+      }
       print('');
     }
     if (warnings.isNotEmpty) {
       print('🟡 WARNINGS (${warnings.length})');
-      for (final i in warnings) print('  $i');
+      for (final i in warnings) {
+        print('  $i');
+      }
       print('');
     }
     if (infos.isNotEmpty) {
       print('🔵 INFO (${infos.length})');
-      for (final i in infos) print('  $i');
+      for (final i in infos) {
+        print('  $i');
+      }
       print('');
     }
 

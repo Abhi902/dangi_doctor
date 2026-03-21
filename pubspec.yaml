@@ -3,10 +3,10 @@ description: >-
   Flutter app health CLI — crawls every screen via the Dart VM service,
   analyses widget trees, measures performance, detects known bugs, and
   generates integration test scripts automatically.
-version: 0.1.0
-repository: https://github.com/dangi-doctor/dangi-doctor
-homepage: https://github.com/dangi-doctor/dangi-doctor
-issue_tracker: https://github.com/dangi-doctor/dangi-doctor/issues
+version: 0.2.0
+repository: https://github.com/Abhi902/dangi_doctor
+homepage: https://github.com/Abhi902/dangi_doctor
+issue_tracker: https://github.com/Abhi902/dangi_doctor/issues
 
 topics:
   - flutter
