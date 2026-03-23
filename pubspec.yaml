@@ -2,7 +2,7 @@ name: dangi_doctor
 description: >-
   Flutter app health CLI — crawls every screen, analyses widget trees,
   measures performance, detects bugs, and generates integration tests.
-version: 0.2.3
+version: 0.2.4
 repository: https://github.com/Abhi902/dangi_doctor
 homepage: https://github.com/Abhi902/dangi_doctor
 issue_tracker: https://github.com/Abhi902/dangi_doctor/issues

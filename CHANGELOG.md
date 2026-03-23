@@ -1,3 +1,7 @@
+## 0.2.4
+
+- Updated README "What's new" section to reflect v0.2.3 changes.
+
 ## 0.2.3
 
 - **AI pooling for large screens**: when a request exceeds the provider's token limit (413),
