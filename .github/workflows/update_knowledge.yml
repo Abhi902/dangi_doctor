@@ -1,0 +1,47 @@
+name: Update Knowledge Files
+
+on:
+  schedule:
+    - cron: '0 2 * * 1'  # Every Monday at 2am UTC
+  workflow_dispatch:       # Allow manual trigger from GitHub Actions tab
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Dart
+        uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+
+      - name: Get dependencies
+        run: dart pub get
+
+      - name: Run knowledge updater
+        run: dart run tool/update_knowledge.dart
+
+      - name: Check for changes
+        id: diff
+        run: |
+          git diff --quiet lib/ai/knowledge/layer1_content.dart \
+                          lib/ai/knowledge/layer2_content.dart \
+            && echo "changed=false" >> $GITHUB_OUTPUT \
+            || echo "changed=true" >> $GITHUB_OUTPUT
+
+      - name: Commit and push updated knowledge
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add lib/ai/knowledge/layer1_content.dart \
+                  lib/ai/knowledge/layer2_content.dart
+          git commit -m "chore: update knowledge files $(date -u '+%Y-%m-%d')"
+          git push
+
+      - name: No changes
+        if: steps.diff.outputs.changed == 'false'
+        run: echo "Knowledge files are already up to date."
