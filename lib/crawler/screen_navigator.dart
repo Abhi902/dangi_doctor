@@ -166,6 +166,17 @@ class ScreenNavigator {
       if (discoveredScreens.length >= maxScreens) break;
 
       print('  🔀 Navigating to route: $route');
+
+      // Start recording before navigation so transition frames are captured.
+      PerformanceCapture? routeCapture;
+      try {
+        routeCapture =
+            PerformanceCapture(vmService: vmService, isolateId: isolateId);
+        await routeCapture.startRecording();
+      } catch (_) {
+        routeCapture = null;
+      }
+
       final navigated = await _evaluator.navigateTo(route);
       if (!navigated) {
         print('     ↳ No router strategy accepted this route — skipping');
@@ -191,7 +202,7 @@ class ScreenNavigator {
         print('  ✅ New screen: $effectiveName  ← route $route');
         _visitedScreenNames.add(effectiveName);
         await _analyseAndRecord(newTree, effectiveName,
-            navigatedVia: 'route:$route');
+            navigatedVia: 'route:$route', startedCapture: routeCapture);
 
         // Go back and wait
         await _goBack();
@@ -299,6 +310,16 @@ class ScreenNavigator {
       final nameBefore = _detectScreenName(treeBefore);
       final filesBefore = _sourceFiles(treeBefore);
 
+      // Start recording before tap so transition frames are captured.
+      PerformanceCapture? tapCapture;
+      try {
+        tapCapture =
+            PerformanceCapture(vmService: vmService, isolateId: isolateId);
+        await tapCapture.startRecording();
+      } catch (_) {
+        tapCapture = null;
+      }
+
       print('  👆 Tapping "${el.desc}" at (${el.cx}, ${el.cy})...');
       await AdbRunner.tap(deviceId!, el.cx, el.cy);
       await Future.delayed(const Duration(milliseconds: 1200));
@@ -319,7 +340,7 @@ class ScreenNavigator {
           print('  ✅ New screen: $effectiveName  ← "${el.desc}"');
           _visitedScreenNames.add(effectiveName);
           await _analyseAndRecord(newTree, effectiveName,
-              navigatedVia: el.desc);
+              navigatedVia: el.desc, startedCapture: tapCapture);
           // Explore this new screen as a complete sub-path.
           await _exploreTappables(newTree, effectiveName,
               depth: depth + 1,
@@ -647,15 +668,20 @@ class ScreenNavigator {
     Map<String, dynamic> tree,
     String screenName, {
     String? navigatedVia,
+    PerformanceCapture? startedCapture,
   }) async {
     _analyser.analyse(tree);
 
-    final perfCapture =
-        PerformanceCapture(vmService: vmService, isolateId: isolateId);
     ScreenPerformance? perf;
     try {
-      perf = await perfCapture.captureWindow(
-          screenName: screenName, durationMs: 1500);
+      if (startedCapture != null) {
+        perf = await startedCapture.stopAndAnalyse(screenName);
+      } else {
+        final perfCapture =
+            PerformanceCapture(vmService: vmService, isolateId: isolateId);
+        perf = await perfCapture.captureWindow(
+            screenName: screenName, durationMs: 1500);
+      }
     } catch (_) {}
 
     discoveredScreens.add(DiscoveredScreen(
