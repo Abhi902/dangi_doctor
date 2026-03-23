@@ -133,6 +133,20 @@ flutter test integration_test/dangi_doctor/<screen>_smoke_test.dart \
   -d <device_id>
 ```
 
+### AI diagnosis — free options
+
+You do not need a paid subscription to get AI diagnosis.
+
+| Provider | Cost | How to get a key |
+|---|---|---|
+| **Groq** | Free tier (14,400 req/day) | Sign up at `console.groq.com` — no credit card |
+| **Ollama** | Free, runs locally | Install from `ollama.com`, run `ollama pull llama3` |
+| Claude | Paid | `console.anthropic.com` |
+| OpenAI | Paid | `platform.openai.com` |
+| Gemini | Paid | `aistudio.google.com` |
+
+If no API key is set, Dangi Doctor asks at runtime which provider to use. Choose **Groq** for the quickest free setup, or **Ollama** for fully offline diagnosis.
+
 ### Environment variables
 
 | Variable | Description |
