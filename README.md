@@ -6,6 +6,14 @@ Dangi Doctor connects to your live Flutter app, crawls every screen automaticall
 
 ---
 
+## What's new in v0.2.2
+
+- **Richer AI diagnosis** — knowledge base now includes flutter.dev docs on layout constraints, DevTools performance profiling, memory leak detection, Android deployment, and async/networking patterns. The AI gives more accurate, specific prescriptions.
+- **AI diagnosis is now free** — no paid subscription needed. Use Groq (free tier, no credit card) or Ollama (fully local, no account). See [AI diagnosis — free options](#ai-diagnosis--free-options) below.
+- **Auto-updating knowledge** — Layer 1 knowledge pulls fresh Flutter docs every Monday via GitHub Actions. You always have the latest Flutter version notes and breaking changes.
+
+---
+
 ## What it does
 
 ### 1. Live app crawling
