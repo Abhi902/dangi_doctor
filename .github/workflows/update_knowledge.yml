@@ -42,6 +42,7 @@ jobs:
           git add lib/ai/knowledge/layer1_content.dart \
                   lib/ai/knowledge/layer2_content.dart
           git commit -m "chore: update knowledge files $(date -u '+%Y-%m-%d')"
+          git pull --rebase
           git push
 
       - name: No changes
