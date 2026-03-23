@@ -5,6 +5,10 @@ on:
     - cron: '0 2 * * 1'  # Every Monday at 2am UTC
   workflow_dispatch:       # Allow manual trigger from GitHub Actions tab
 
+concurrency:
+  group: update-knowledge
+  cancel-in-progress: true
+
 jobs:
   update:
     runs-on: ubuntu-latest
@@ -42,7 +46,7 @@ jobs:
           git add lib/ai/knowledge/layer1_content.dart \
                   lib/ai/knowledge/layer2_content.dart
           git commit -m "chore: update knowledge files $(date -u '+%Y-%m-%d')"
-          git pull --rebase
+          git pull --rebase origin main
           git push
 
       - name: No changes
