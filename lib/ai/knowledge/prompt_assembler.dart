@@ -6,11 +6,23 @@ class PromptAssembler {
 
   PromptAssembler({required this.projectPath});
 
-  Future<String> assemble() async {
+  /// Assembles the full system prompt from all three knowledge layers.
+  ///
+  /// [compact] — when true, uses a truncated Layer 1 (first 3000 chars only)
+  /// instead of the full flutter docs. Use this for free-tier providers that
+  /// have strict token-per-minute limits (e.g. Groq free tier).
+  Future<String> assemble({bool compact = false}) async {
     final buffer = StringBuffer();
 
     // Layer 1 — Flutter official knowledge (bundled, updated weekly via pub upgrade)
-    buffer.writeln(KnowledgeUpdater.layer1);
+    final layer1 = KnowledgeUpdater.layer1;
+    if (compact) {
+      // Take only the first ~3000 chars (role definition + core rules).
+      // The tail is verbose flutter.dev excerpts not needed for basic diagnosis.
+      buffer.writeln(layer1.length > 3000 ? layer1.substring(0, 3000) : layer1);
+    } else {
+      buffer.writeln(layer1);
+    }
 
     // Layer 2 — Community anti-patterns (bundled, updated weekly via pub upgrade)
     buffer.writeln(KnowledgeUpdater.layer2);

@@ -271,7 +271,14 @@ class ScreenNavigator {
       return;
     }
 
-    final tappables = await _getAllTappables();
+    if (_isWebViewScreen(screenName)) {
+      print(
+          '  🌐 WebView screen "$screenName" — skipping tappable exploration'
+          ' (web content, not Flutter routes).');
+      return;
+    }
+
+    final tappables = await _waitForStableTappables();
     if (tappables.isEmpty) {
       print('  ⚠️  No tappable elements found on $screenName');
       return;
@@ -322,7 +329,7 @@ class ScreenNavigator {
 
       print('  👆 Tapping "${el.desc}" at (${el.cx}, ${el.cy})...');
       await AdbRunner.tap(deviceId!, el.cx, el.cy);
-      await Future.delayed(const Duration(milliseconds: 1200));
+      await _waitForNavigation(nameBefore);
 
       final newTree = await _captureTree();
       final newName = _detectScreenName(newTree);
@@ -433,6 +440,41 @@ class ScreenNavigator {
       return _deduplicateListItems(result);
     } catch (_) {
       return [];
+    }
+  }
+
+  /// Polls [_getAllTappables] until the count stabilises (two consecutive polls
+  /// return the same count) or [maxAttempts] is reached. This handles screens
+  /// that load content asynchronously (e.g. API-driven lists) where an early
+  /// call would return far fewer tappables than the fully-loaded state.
+  Future<List<({int cx, int cy, String desc})>> _waitForStableTappables({
+    int maxAttempts = 5,
+    int intervalMs = 600,
+  }) async {
+    var prev = await _getAllTappables();
+    for (var i = 0; i < maxAttempts - 1; i++) {
+      await Future.delayed(Duration(milliseconds: intervalMs));
+      final current = await _getAllTappables();
+      if (current.length == prev.length) return current;
+      prev = current;
+    }
+    return prev;
+  }
+
+  /// Waits up to [maxWaitMs] for the screen to change after a tap. Polls the
+  /// widget tree every [intervalMs] ms and returns as soon as the root screen
+  /// name differs from [screenNameBefore]. Falls back gracefully if the screen
+  /// never changes (button had no navigation effect).
+  Future<void> _waitForNavigation(
+    String screenNameBefore, {
+    int maxWaitMs = 2400,
+    int intervalMs = 400,
+  }) async {
+    final steps = maxWaitMs ~/ intervalMs;
+    for (var i = 0; i < steps; i++) {
+      await Future.delayed(Duration(milliseconds: intervalMs));
+      final tree = await _captureTree();
+      if (_detectScreenName(tree) != screenNameBefore) return;
     }
   }
 
@@ -559,6 +601,12 @@ class ScreenNavigator {
     int maxPresses = 3,
     String? homeScreenName,
   }) async {
+    // Only dismiss a confirmation dialog ONCE per return attempt.
+    // Repeated dismissals risk cascading into destructive actions
+    // (e.g. tapping a "Leave" button on a submit confirmation after
+    // already having exited the first dialog).
+    var dialogDismissed = false;
+
     for (var i = 0; i < maxPresses; i++) {
       final tree = await _captureTree();
       final current = _detectScreenName(tree);
@@ -570,11 +618,73 @@ class ScreenNavigator {
           targetScreenName != homeScreenName) {
         return false;
       }
+      final screenBeforeBack = current;
       await _goBack();
       await Future.delayed(const Duration(milliseconds: 800));
+      // Only check for a dialog if Back didn't change the screen AND
+      // we haven't already dismissed one dialog this call.
+      final treeAfterBack = await _captureTree();
+      final screenAfterBack = _detectScreenName(treeAfterBack);
+      if (screenAfterBack == screenBeforeBack && !dialogDismissed) {
+        final dismissed = await _dismissConfirmationDialogIfPresent();
+        if (dismissed) dialogDismissed = true;
+        await Future.delayed(const Duration(milliseconds: 600));
+      }
     }
+
+    // Fail-safe: rapid back burst — 3 quick presses in case we landed on an
+    // unexpected intermediate screen (e.g. a post-dialog results page).
+    // Each press checks immediately whether we've reached the target.
+    print('  ↩️  Back-burst fail-safe for "$targetScreenName"...');
+    for (var i = 0; i < 3; i++) {
+      await _goBack();
+      await Future.delayed(const Duration(milliseconds: 400));
+      final t = await _captureTree();
+      final s = _detectScreenName(t);
+      if (s == targetScreenName) return true;
+      if (homeScreenName != null &&
+          s == homeScreenName &&
+          targetScreenName != homeScreenName) {
+        break;
+      }
+    }
+
     final finalTree = await _captureTree();
     return _detectScreenName(finalTree) == targetScreenName;
+  }
+
+  /// After pressing Back, some screens show a "Are you sure you want to leave?"
+  /// dialog or bottom sheet. This detects common leave/exit/confirm buttons and
+  /// taps them so the navigation actually completes.
+  ///
+  /// Returns `true` if a button was found and tapped, `false` if no dialog was
+  /// detected. Callers should cap calls to this at one per navigation attempt.
+  ///
+  /// Keywords deliberately exclude "submit", "finish", and "end" — these are
+  /// too destructive (e.g. they would submit a real in-progress test).
+  Future<bool> _dismissConfirmationDialogIfPresent() async {
+    if (deviceId == null || deviceId!.isEmpty) return false;
+    final tappables = await _getAllTappables();
+
+    const leaveKeywords = [
+      'leave', 'exit', 'quit', 'yes', 'ok', 'confirm', 'close', 'go back',
+    ];
+    const stayKeywords = [
+      'stay', 'no', 'cancel', 'resume', 'keep', 'continue',
+    ];
+
+    for (final el in tappables) {
+      final label = el.desc.toLowerCase();
+      final isLeave = leaveKeywords.any((k) => label.contains(k));
+      final isStay = stayKeywords.any((k) => label.contains(k));
+      if (isLeave && !isStay) {
+        print('  🚪 Confirmation dialog — tapping "${el.desc}" to leave');
+        await AdbRunner.tap(deviceId!, el.cx, el.cy);
+        await Future.delayed(const Duration(milliseconds: 600));
+        return true;
+      }
+    }
+    return false;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -620,6 +730,18 @@ class ScreenNavigator {
       file.writeAsStringSync(const JsonEncoder.withIndent('  ').convert(data));
       print('  💾 Explored paths saved for next run.');
     } catch (_) {}
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // WebView screen detection
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /// Returns true when the screen is a web view. WebView screens contain
+  /// browser-rendered content (calendars, dashboards, etc.) whose tappable
+  /// elements are web DOM nodes, not Flutter routes — exploring them produces
+  /// hundreds of useless taps and no new screens.
+  bool _isWebViewScreen(String screenName) {
+    return screenName.toLowerCase().contains('webview');
   }
 
   // ─────────────────────────────────────────────────────────────────────────

@@ -129,7 +129,8 @@ class GroqProvider implements AiProvider {
   GroqProvider(this.apiKey);
 
   @override
-  String get name => 'Llama 3.3 70B (Groq — fast & cheap)';
+  // llama-3.1-8b-instant: 30 000 TPM on free tier (vs 12 000 for 70B).
+  String get name => 'Llama 3.1 8B Instant (Groq — fast & free)';
 
   @override
   Future<String> complete(String systemPrompt, String userMessage) async {
@@ -140,8 +141,8 @@ class GroqProvider implements AiProvider {
         'Authorization': 'Bearer $apiKey',
       },
       body: jsonEncode({
-        'model': 'llama-3.3-70b-versatile',
-        'max_tokens': 2048,
+        'model': 'llama-3.1-8b-instant',
+        'max_tokens': 1024,
         'messages': [
           {'role': 'system', 'content': systemPrompt},
           {'role': 'user', 'content': userMessage},
@@ -320,20 +321,112 @@ class AiClient {
     final assembler = PromptAssembler(projectPath: projectPath);
     final systemPrompt = await assembler.assemble();
 
-    final issueText = issues.map((i) {
-      return '[${(i['severity'] as String).toUpperCase()}] '
-          '${i['type']} in ${i['file'] ?? 'unknown'}:${i['line'] ?? '?'} — '
-          '${i['message']}';
-    }).join('\n');
+    final screenContext = _buildScreenContext(
+      screenName: screenName,
+      totalWidgets: totalWidgets,
+      maxDepth: maxDepth,
+      widgetCounts: widgetCounts,
+      perfGrade: perfGrade,
+      avgBuildMs: avgBuildMs,
+      jankRate: jankRate,
+      jankyFrames: jankyFrames,
+      totalFrames: totalFrames,
+      interactionReport: interactionReport,
+    );
 
+    final issueText = _formatIssues(issues);
+    final userMessage = '''
+Diagnose this Flutter screen and provide your full medical report.
+
+$screenContext
+
+DETECTED ISSUES:
+$issueText
+
+Give me your full diagnosis with health score and prioritised prescriptions.
+''';
+
+    try {
+      return await _completeWithRetry(systemPrompt, userMessage);
+    } catch (e) {
+      if (_isTokenLimitError(e)) {
+        return await _diagnoseChunked(
+          issues: issues,
+          screenContext: screenContext,
+        );
+      }
+      rethrow;
+    }
+  }
+
+  /// Splits issues into chunks of 40, runs each batch with a compact system
+  /// prompt asking for a tight bullet list, then does one final summarization
+  /// call — also with the compact prompt so the total fits in tight TPM limits.
+  Future<String> _diagnoseChunked({
+    required List<Map<String, dynamic>> issues,
+    required String screenContext,
+  }) async {
+    const chunkSize = 40;
+    final chunks = <List<Map<String, dynamic>>>[];
+    for (var i = 0; i < issues.length; i += chunkSize) {
+      final end = (i + chunkSize).clamp(0, issues.length);
+      chunks.add(issues.sublist(i, end));
+    }
+
+    print(
+        '  ⚠️  Request too large — pooling ${chunks.length} batches of ≤$chunkSize issues...');
+
+    // Use compact system prompt for all calls in the chunked path.
+    final assembler = PromptAssembler(projectPath: projectPath);
+    final compactSystem = await assembler.assemble(compact: true);
+
+    final batchFindings = <String>[];
+    for (var i = 0; i < chunks.length; i++) {
+      print('  📦 Batch ${i + 1}/${chunks.length} (${chunks[i].length} issues)...');
+      // Ask for a tiny bullet list — max 3 items, one line each.
+      final batchMessage =
+          'Batch ${i + 1}/${chunks.length}. List up to 3 CRITICAL issues only.\n'
+          'Format each as: `[TYPE] file:line — reason (≤8 words)`\n\n'
+          '${_formatIssues(chunks[i])}';
+      try {
+        final result = await _completeWithRetry(compactSystem, batchMessage);
+        batchFindings.add(result.trim());
+      } catch (e) {
+        batchFindings.add('⚠️ Batch ${i + 1} skipped: $e');
+      }
+    }
+
+    // Final summarization — compact system prompt + compact batch findings.
+    print('  🔄 Summarising ${chunks.length} batch results into unified report...');
+    final summaryMessage =
+        'Produce the full medical report from these batch findings.\n\n'
+        '$screenContext\n\n'
+        'CRITICAL FINDINGS ACROSS ${chunks.length} BATCHES '
+        '(${issues.length} total issues):\n'
+        '${batchFindings.join('\n')}\n\n'
+        'Give health score and prioritised prescriptions.';
+
+    return await _completeWithRetry(compactSystem, summaryMessage);
+  }
+
+  String _buildScreenContext({
+    required String screenName,
+    required int totalWidgets,
+    required int maxDepth,
+    required Map<String, int> widgetCounts,
+    required String perfGrade,
+    required double avgBuildMs,
+    required double jankRate,
+    required int jankyFrames,
+    required int totalFrames,
+    required String interactionReport,
+  }) {
     final topWidgets = widgetCounts.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
     final widgetSummary =
         topWidgets.take(10).map((e) => '${e.key}: ${e.value}x').join(', ');
 
-    final userMessage = '''
-Diagnose this Flutter screen and provide your full medical report.
-
+    return '''
 SCREEN: $screenName
 TOTAL WIDGETS: $totalWidgets
 MAX NESTING DEPTH: $maxDepth
@@ -345,14 +438,61 @@ PERFORMANCE DATA:
 - Jank rate         : ${jankRate.toStringAsFixed(1)}%
 - Janky frames      : $jankyFrames / $totalFrames total frames
 
-${interactionReport.isNotEmpty ? interactionReport : ''}
+${interactionReport.isNotEmpty ? interactionReport : ''}''';
+  }
 
-DETECTED ISSUES:
-$issueText
+  String _formatIssues(List<Map<String, dynamic>> issues) {
+    return issues.map((i) {
+      return '[${(i['severity'] as String).toUpperCase()}] '
+          '${i['type']} in ${i['file'] ?? 'unknown'}:${i['line'] ?? '?'} — '
+          '${i['message']}';
+    }).join('\n');
+  }
 
-Give me your full diagnosis with health score and prioritised prescriptions.
-''';
+  /// Calls [provider.complete] and retries once on 429 rate-limit responses,
+  /// waiting the number of seconds the API tells us to wait.
+  Future<String> _completeWithRetry(
+      String systemPrompt, String userMessage) async {
+    try {
+      return await provider.complete(systemPrompt, userMessage);
+    } catch (e) {
+      final wait = _parseRetryAfter(e);
+      if (wait != null) {
+        final secs = wait + 2; // small buffer
+        print('  ⏳ Rate limited — waiting ${secs}s before retry...');
+        await Future.delayed(Duration(seconds: secs));
+        return await provider.complete(systemPrompt, userMessage);
+      }
+      rethrow;
+    }
+  }
 
-    return await provider.complete(systemPrompt, userMessage);
+  /// Parses "Please try again in Xs" from a Groq / OpenAI 429 message.
+  /// Returns seconds to wait, or null if not a rate-limit error.
+  int? _parseRetryAfter(Object e) {
+    final msg = e.toString();
+    if (!msg.contains('429') && !msg.contains('rate_limit_exceeded')) {
+      return null;
+    }
+    // "Please try again in 19.91s" or "try again in 2m30s"
+    final secMatch = RegExp(r'try again in (\d+(?:\.\d+)?)s').firstMatch(msg);
+    if (secMatch != null) {
+      return (double.parse(secMatch.group(1)!)).ceil();
+    }
+    final minMatch =
+        RegExp(r'try again in (\d+)m(\d+)s').firstMatch(msg);
+    if (minMatch != null) {
+      return int.parse(minMatch.group(1)!) * 60 +
+          int.parse(minMatch.group(2)!);
+    }
+    return 30; // fallback: wait 30s if we can't parse
+  }
+
+  bool _isTokenLimitError(Object e) {
+    final msg = e.toString().toLowerCase();
+    return msg.contains('413') ||
+        msg.contains('request too large') ||
+        msg.contains('context_length_exceeded') ||
+        msg.contains('max_tokens');
   }
 }

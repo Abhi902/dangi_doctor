@@ -1,3 +1,17 @@
+## 0.2.3
+
+- **AI pooling for large screens**: when a request exceeds the provider's token limit (413),
+  issues are split into batches of 40 and analysed in parallel passes with a compact system
+  prompt. A final summarisation call combines all batch findings into a unified health report.
+- **Auto-retry on rate limits (429)**: parses the `"try again in Xs"` wait time from Groq /
+  OpenAI error responses and retries automatically — no manual re-runs needed.
+- **Groq model switched** to `llama-3.1-8b-instant` (30 000 TPM free tier vs 12 000 for 70B),
+  making Groq reliably usable without upgrading.
+- **Stable tappables polling**: crawler now waits for the tappable-element count to stabilise
+  before exploring a screen, catching async-loaded content (API-driven lists, lazy widgets).
+- **Smart post-tap waiting**: replaced fixed 1 200 ms delay with a poll-until-screen-changes
+  strategy — faster on quick navigations, patient on slow ones.
+
 ## 0.2.2
 
 - Expanded Layer 1 AI knowledge with 5 new flutter.dev sources:
