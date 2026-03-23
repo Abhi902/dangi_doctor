@@ -6,11 +6,12 @@ Dangi Doctor connects to your live Flutter app, crawls every screen automaticall
 
 ---
 
-## What's new in v0.2.2
+## What's new in v0.2.3
 
-- **Richer AI diagnosis** — knowledge base now includes flutter.dev docs on layout constraints, DevTools performance profiling, memory leak detection, Android deployment, and async/networking patterns. The AI gives more accurate, specific prescriptions.
-- **AI diagnosis is now free** — no paid subscription needed. Use Groq (free tier, no credit card) or Ollama (fully local, no account). See [AI diagnosis — free options](#ai-diagnosis--free-options) below.
-- **Auto-updating knowledge** — Layer 1 knowledge pulls fresh Flutter docs every Monday via GitHub Actions. You always have the latest Flutter version notes and breaking changes.
+- **AI pooling for large screens** — when a screen has too many issues for a single API call, they are automatically split into batches of 40, each analysed separately, then combined into one unified health report.
+- **Auto-retry on rate limits** — Groq/OpenAI 429 errors are handled silently: the wait time is parsed from the error response and the request retries automatically.
+- **Groq free tier now reliable** — switched to `llama-3.1-8b-instant` (30 000 TPM) so Groq works without hitting limits on typical Flutter projects.
+- **Smarter crawler** — tappable exploration now waits for async-loaded content to stabilise, and post-tap waits poll for screen changes instead of a fixed delay.
 
 ---
 
