@@ -1,3 +1,15 @@
+## 0.2.2
+
+- Expanded Layer 1 AI knowledge with 5 new flutter.dev sources:
+  - Layout constraints (`flutter.dev/ui/layout/constraints`)
+  - DevTools performance profiling (`flutter.dev/tools/devtools/performance`)
+  - DevTools memory & leak detection (`flutter.dev/tools/devtools/memory`)
+  - Android deployment guide (`flutter.dev/deployment/android`)
+  - Networking & async cookbook (`flutter.dev/cookbook/networking/fetch-data`)
+- AI diagnosis now free for everyone: added Groq (free tier, no credit card) and
+  Ollama (fully local, no account) to README with setup instructions.
+- Knowledge auto-updates every Monday via GitHub Actions.
+
 ## 0.2.1
 
 - Fixed pub.dev score issues:
