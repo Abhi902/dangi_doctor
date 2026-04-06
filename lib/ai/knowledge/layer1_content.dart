@@ -2,7 +2,7 @@
 // Sources: Flutter CHANGELOG, flutter.dev/testing, flutter.dev/perf,
 //          flutter.dev/ui/layout/constraints, devtools/performance,
 //          devtools/memory, deployment/android, cookbook/networking
-// Updated: 2026-03-30T04:37:59.044141Z
+// Updated: 2026-04-06T04:37:12.796543Z
 
 const String kLayer1Content = '''
 === LAYER 1: FLUTTER OFFICIAL KNOWLEDGE ===
@@ -603,9 +603,9 @@ This guide explains how to perform the following tasks:
 
 :::note
 Throughout this page, `[project]` refers to
-the directory that your application is in. While following
-these instructions, substitute `[project]` with
-your app's directory.
+the directory that contains your application.
+While following these instructions,
+substitute `[project]` with your app's directory.
 :::
 
 [play]: {{site.android-dev}}/distribute
@@ -613,7 +613,7 @@ your app's directory.
 ## Add a launcher icon
 
 When a new Flutter app is created, it has a default launcher icon.
-To customize this icon, y
+To customize this icon
 ...(truncated)
 
 ━━━ NETWORKING & ASYNC COOKBOOK ━━━
