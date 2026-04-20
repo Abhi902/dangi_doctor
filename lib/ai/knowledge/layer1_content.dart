@@ -2,7 +2,7 @@
 // Sources: Flutter CHANGELOG, flutter.dev/testing, flutter.dev/perf,
 //          flutter.dev/ui/layout/constraints, devtools/performance,
 //          devtools/memory, deployment/android, cookbook/networking
-// Updated: 2026-04-13T04:51:54.730978Z
+// Updated: 2026-04-20T04:51:34.191034Z
 
 const String kLayer1Content = '''
 === LAYER 1: FLUTTER OFFICIAL KNOWLEDGE ===
@@ -131,6 +131,11 @@ PERFORMANCE RULES (from flutter.dev/perf):
 ─── Flutter 3.41 ───────────────────────────
 ## Flutter 3.41 Changes
 
+### [3.41.7](https://github.com/flutter/flutter/releases/tag/3.41.7)
+- [flutter/184376](https://github.com/flutter/flutter/issues/184376) When building an iOS or macOS app, the build may fail due to git multi-pack-index error.
+- [flutter/184254](https://github.com/flutter/flutter/issues/184254) When debugging on physical iOS devices and Xcode 26.4+, app often crashes.
+- [flutter/184689](https://github.com/flutter/flutter/issues/184689) When using an ffi Windows package, don't require a plugin class.
+
 ### [3.41.6](https://github.com/flutter/flutter/releases/tag/3.41.6)
 - [flutter/184025](https://github.com/flutter/flutter/pull/184025) Include a fix from Skia that ensures that the correct atlas for the glyph mask format is used consistently.
 - [flutter/182708](https://github.com/flutter/flutter/issues/182708) Visual issues with circles appearing jagged. Especially on thin stroked circles and circles with small radii.
@@ -140,10 +145,7 @@ PERFORMANCE RULES (from flutter.dev/perf):
 - [flutter/182708](https://github.com/flutter/flutter/issues/182708) When using Impeller on any platform, bur artifacts in circles rendering at 45 degree angles.
 
 ### [3.41.4](https://github.com/flutter/flutter/releases/tag/3.41.4)
-- [flutter/182748](https://github.com/flutter/flutter/issues/182748) When building for an iOS simulator with Xcode 26, the build will fail when there is a CocoaPod dependency that does not support arm.
-- [flutter/182361](https://github.com/flutter/flutter/issues/182361) When iOS plugins register to receive lifecycle events during an event, a crash may occur.
-- [flutter/182367](https://github.com/flutter/flutter/issues/182367) Crash on Flutter Web Skwasm apps.
-- [flutter/183071](https://github.com/flutter/flutter/issues/183071) U
+- [flutter/182748](https://g
   ...(more fixes not shown)
 
 ─── Flutter 3.38 ───────────────────────────
