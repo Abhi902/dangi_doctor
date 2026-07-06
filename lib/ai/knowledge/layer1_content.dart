@@ -2,7 +2,7 @@
 // Sources: Flutter CHANGELOG, flutter.dev/testing, flutter.dev/perf,
 //          flutter.dev/ui/layout/constraints, devtools/performance,
 //          devtools/memory, deployment/android, cookbook/networking
-// Updated: 2026-06-29T06:28:42.464743Z
+// Updated: 2026-07-06T06:19:01.701091Z
 
 const String kLayer1Content = '''
 === LAYER 1: FLUTTER OFFICIAL KNOWLEDGE ===
