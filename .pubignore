@@ -1,2 +1,8 @@
 build/
+test/
+tool/
+knowledge/
+.dangi_doctor/
+pubspec.lock
+REVIEW.md
 test_report.dart

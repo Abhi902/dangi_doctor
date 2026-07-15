@@ -12,5 +12,8 @@
 /// ```
 library;
 
+export 'analysis/performance.dart' show ScreenPerformance;
+export 'analysis/tree_analyser.dart' show TreeAnalyser, WidgetIssue;
 export 'crawler/screen_navigator.dart' show DiscoveredScreen, ScreenNavigator;
-export 'generator/app_analyser.dart' show AppAnalysis, AppAnalyser;
+export 'generator/app_analyser.dart'
+    show AppAnalysis, AppAnalyser, KnownRisk;

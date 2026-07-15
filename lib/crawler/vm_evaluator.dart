@@ -44,7 +44,7 @@ class VmEvaluator {
 
   /// Finds:
   ///  1. The library that DEFINES navigatorKey (via getObject variable scan).
-  ///  2. The live GlobalKey<NavigatorState> heap instance (via getInstances).
+  ///  2. The live `GlobalKey<NavigatorState>` heap instance (via getInstances).
   ///
   /// Must be called before [navigateTo].
   Future<void> init() async {
@@ -139,7 +139,7 @@ class VmEvaluator {
     }
   }
 
-  /// Locates the GlobalKey<NavigatorState> object in the isolate heap.
+  /// Locates the `GlobalKey<NavigatorState>` object in the isolate heap.
   ///
   /// Strategy:
   ///   a. Scan flutter widget framework library for the GlobalKey class.
