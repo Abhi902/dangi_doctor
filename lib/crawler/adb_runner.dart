@@ -23,10 +23,11 @@ Map<String, int> parseWmSize(String stdout) {
 /// callers compare against it to detect "no app in front".
 String? parseForegroundPackage(String dumpsys) {
   // e.g. "mResumedActivity: ActivityRecord{... com.dangi.app/.MainActivity ...}"
-  final match = RegExp(
-              r'(?:mResumedActivity|topResumedActivity)\S*.*?\s([a-zA-Z][\w.]+)/')
-          .firstMatch(dumpsys) ??
-      RegExp(r'mCurrentFocus=\S+\s+\S+\s+([a-zA-Z][\w.]+)/').firstMatch(dumpsys);
+  final match =
+      RegExp(r'(?:mResumedActivity|topResumedActivity)\S*.*?\s([a-zA-Z][\w.]+)/')
+              .firstMatch(dumpsys) ??
+          RegExp(r'mCurrentFocus=\S+\s+\S+\s+([a-zA-Z][\w.]+)/')
+              .firstMatch(dumpsys);
   return match?.group(1);
 }
 
@@ -35,7 +36,9 @@ String? parseForegroundPackage(String dumpsys) {
 bool isLauncherPackage(String? package) {
   if (package == null) return false;
   final p = package.toLowerCase();
-  return p.contains('launcher') || p.contains('nexuslauncher') || p == 'com.android.settings';
+  return p.contains('launcher') ||
+      p.contains('nexuslauncher') ||
+      p == 'com.android.settings';
 }
 
 /// Escape text for `adb shell input text`. The argument passes through the

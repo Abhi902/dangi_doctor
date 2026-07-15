@@ -73,10 +73,10 @@ void main() {
 
   group('generateDartConst', () {
     test('is deterministic — no timestamps, same input same output', () {
-      final a = generateDartConst(
-          varName: 'kX', comment: '// c', content: 'body');
-      final b = generateDartConst(
-          varName: 'kX', comment: '// c', content: 'body');
+      final a =
+          generateDartConst(varName: 'kX', comment: '// c', content: 'body');
+      final b =
+          generateDartConst(varName: 'kX', comment: '// c', content: 'body');
       expect(a, b);
       expect(a, isNot(matches(RegExp(r'Updated:'))));
     });

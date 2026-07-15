@@ -50,7 +50,8 @@ class ProjectFingerprint {
       try {
         final cached =
             jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
-        final scannedAt = DateTime.tryParse(cached['scanned_at'] as String? ?? '');
+        final scannedAt =
+            DateTime.tryParse(cached['scanned_at'] as String? ?? '');
         final pubspec = File('$projectPath/pubspec.yaml');
         final pubspecChanged = scannedAt != null &&
             pubspec.existsSync() &&

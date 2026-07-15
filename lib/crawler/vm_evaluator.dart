@@ -335,10 +335,8 @@ class VmEvaluator {
 
   /// Escape a string for safe interpolation inside a single-quoted Dart
   /// expression literal.
-  static String _dartLiteral(String s) => s
-      .replaceAll(r'\', r'\\')
-      .replaceAll(r'$', r'\$')
-      .replaceAll("'", r"\'");
+  static String _dartLiteral(String s) =>
+      s.replaceAll(r'\', r'\\').replaceAll(r'$', r'\$').replaceAll("'", r"\'");
 
   // ───────────────────────────────────────────────────────────────────────────
   // Evaluate helper

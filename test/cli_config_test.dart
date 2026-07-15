@@ -18,9 +18,12 @@ void main() {
 
     test('parses all supported options', () {
       final config = parseCliArgs([
-        '--project', '/tmp/my_app',
-        '--vm-url', 'ws://127.0.0.1:8181/abc=/ws',
-        '--device', 'emulator-5554',
+        '--project',
+        '/tmp/my_app',
+        '--vm-url',
+        'ws://127.0.0.1:8181/abc=/ws',
+        '--device',
+        'emulator-5554',
         '--no-ai',
       ]);
       expect(config.project, '/tmp/my_app');

@@ -1,9 +1,12 @@
-build/
-test/
-tool/
-knowledge/
-.dangi_doctor/
-pubspec.lock
-REVIEW.md
-test_report.dart
-playground/
+# Leading slashes anchor to the package root so these NEVER match a nested
+# directory. Without the slash, `knowledge/` also matched `lib/ai/knowledge/`
+# and stripped the entire AI layer out of the published package (0.3.0 bug).
+/build/
+/test/
+/tool/
+/knowledge/
+/playground/
+/.dangi_doctor/
+/pubspec.lock
+/REVIEW.md
+/test_report.dart

@@ -332,7 +332,8 @@ class InteractionEngine {
     final x = position?['x'] ?? (screenSize['width']! / 2).toDouble();
     final y = position?['y'] ?? (screenSize['height']! / 2).toDouble();
 
-    await _adb(['shell', 'input', 'tap', x.toInt().toString(), y.toInt().toString()]);
+    await _adb(
+        ['shell', 'input', 'tap', x.toInt().toString(), y.toInt().toString()]);
   }
 
   /// All adb access goes through AdbRunner — it resolves the adb binary off
@@ -350,18 +351,26 @@ class InteractionEngine {
 
     // Swipe down (scroll up content)
     await _adb([
-      'shell', 'input', 'swipe',
-      cx.toString(), (h * 0.3).toInt().toString(),
-      cx.toString(), (h * 0.7).toInt().toString(),
+      'shell',
+      'input',
+      'swipe',
+      cx.toString(),
+      (h * 0.3).toInt().toString(),
+      cx.toString(),
+      (h * 0.7).toInt().toString(),
       '400',
     ]);
     await Future.delayed(const Duration(milliseconds: 300));
 
     // Swipe back up
     await _adb([
-      'shell', 'input', 'swipe',
-      cx.toString(), (h * 0.7).toInt().toString(),
-      cx.toString(), (h * 0.3).toInt().toString(),
+      'shell',
+      'input',
+      'swipe',
+      cx.toString(),
+      (h * 0.7).toInt().toString(),
+      cx.toString(),
+      (h * 0.3).toInt().toString(),
       '400',
     ]);
   }

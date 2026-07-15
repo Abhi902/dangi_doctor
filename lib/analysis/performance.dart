@@ -5,9 +5,9 @@ import 'package:vm_service/vm_service.dart';
 /// Parse the display refresh rate out of `adb shell dumpsys display` output.
 /// Returns null when nothing parseable is present.
 double? parseDisplayRefreshRate(String dumpsysOutput) {
-  final match = RegExp(r'renderFrameRate\s+(\d+(?:\.\d+)?)')
-          .firstMatch(dumpsysOutput) ??
-      RegExp(r'fps=(\d+(?:\.\d+)?)').firstMatch(dumpsysOutput);
+  final match =
+      RegExp(r'renderFrameRate\s+(\d+(?:\.\d+)?)').firstMatch(dumpsysOutput) ??
+          RegExp(r'fps=(\d+(?:\.\d+)?)').firstMatch(dumpsysOutput);
   if (match == null) return null;
   final hz = double.parse(match.group(1)!);
   return hz > 0 ? hz : null;

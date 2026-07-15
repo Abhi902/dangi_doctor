@@ -45,9 +45,8 @@ String? extractSection(String generatedFile, String sectionKey) {
   final bodyStart = start + marker.length;
   final nextMarker = content.indexOf('\n━━━ ', bodyStart);
   final end = nextMarker >= 0 ? nextMarker : content.indexOf("'''", bodyStart);
-  final body = content
-      .substring(bodyStart, end >= 0 ? end : content.length)
-      .trim();
+  final body =
+      content.substring(bodyStart, end >= 0 ? end : content.length).trim();
   return body;
 }
 
@@ -61,8 +60,7 @@ Map<String, String> mergeWithPrevious({
 }) {
   final merged = <String, String>{};
   for (final entry in fresh.entries) {
-    if (entry.value.trim().isNotEmpty &&
-        entry.value.trim() != kUnavailable) {
+    if (entry.value.trim().isNotEmpty && entry.value.trim() != kUnavailable) {
       merged[entry.key] = entry.value;
       continue;
     }

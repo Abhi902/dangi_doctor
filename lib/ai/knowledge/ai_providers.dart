@@ -29,8 +29,7 @@ class AiHttpException implements Exception {
 
   /// Transient failures worth retrying: rate limits, server errors, and
   /// Anthropic's 529 overloaded_error.
-  bool get isRetryable =>
-      isRateLimit || statusCode >= 500 || statusCode == 529;
+  bool get isRetryable => isRateLimit || statusCode >= 500 || statusCode == 529;
 
   /// The request itself was too large — reroute to the chunked path.
   /// Deliberately narrow: a 400 validation error that merely *mentions*
@@ -58,7 +57,8 @@ int? parseRetryAfterSeconds({required String? header, required String body}) {
     final fromHeader = int.tryParse(header.trim());
     if (fromHeader != null) return fromHeader;
   }
-  final minSec = RegExp(r'try again in (\d+)m(\d+(?:\.\d+)?)s').firstMatch(body);
+  final minSec =
+      RegExp(r'try again in (\d+)m(\d+(?:\.\d+)?)s').firstMatch(body);
   if (minSec != null) {
     return int.parse(minSec.group(1)!) * 60 +
         double.parse(minSec.group(2)!).ceil();
@@ -125,8 +125,9 @@ String extractGeminiText(Map<String, dynamic> json) {
   }
   final first = candidates.first as Map;
   final parts = (first['content'] as Map?)?['parts'];
-  final text =
-      parts is List && parts.isNotEmpty ? (parts.first as Map)['text'] as String? : null;
+  final text = parts is List && parts.isNotEmpty
+      ? (parts.first as Map)['text'] as String?
+      : null;
   if (text == null || text.isEmpty) {
     throw FormatException(
         'Gemini returned no text (finishReason: ${first['finishReason']}).');
@@ -160,8 +161,8 @@ class ModelConfig {
       int.tryParse(Platform.environment['DANGI_MAX_TOKENS'] ?? '') ?? 4096;
 }
 
-Future<http.Response> _post(String provider, Uri uri,
-    Map<String, String> headers, Object body) async {
+Future<http.Response> _post(
+    String provider, Uri uri, Map<String, String> headers, Object body) async {
   final response = await http
       .post(uri, headers: headers, body: jsonEncode(body))
       .timeout(_requestTimeout);
@@ -590,7 +591,8 @@ Give me your full diagnosis with health score and prioritised prescriptions.
     final batchFindings = <String>[];
     var skippedBatches = 0;
     for (var i = 0; i < chunks.length; i++) {
-      print('  📦 Batch ${i + 1}/${chunks.length} (${chunks[i].length} issues)...');
+      print(
+          '  📦 Batch ${i + 1}/${chunks.length} (${chunks[i].length} issues)...');
       // Ask for a tiny bullet list — max 3 items, one line each.
       final batchMessage =
           'Batch ${i + 1}/${chunks.length}. List up to 3 CRITICAL issues only.\n'
@@ -609,7 +611,8 @@ Give me your full diagnosis with health score and prioritised prescriptions.
     }
 
     // Final summarization — compact system prompt + compact batch findings.
-    print('  🔄 Summarising ${chunks.length} batch results into unified report...');
+    print(
+        '  🔄 Summarising ${chunks.length} batch results into unified report...');
     final summaryMessage =
         'Produce the full medical report from these batch findings.\n\n'
         '<crawled_data>\n$screenContext\n</crawled_data>\n\n'
@@ -667,7 +670,7 @@ ${interactionReport.isNotEmpty ? interactionReport : ''}''';
   Future<String> _completeWithRetry(
       String systemPrompt, String userMessage) async {
     const maxAttempts = 3;
-    for (var attempt = 1; ; attempt++) {
+    for (var attempt = 1;; attempt++) {
       try {
         return await provider.complete(systemPrompt, userMessage);
       } on AiHttpException catch (e) {
@@ -677,7 +680,7 @@ ${interactionReport.isNotEmpty ? interactionReport : ''}''';
         final waitSecs = e.retryAfterSeconds ??
             (pow(2, attempt).toInt() * 2 + _random.nextInt(3));
         print('  ⏳ ${e.isRateLimit ? 'Rate limited' : 'Server error '
-            '(${e.statusCode})'} — retry ${attempt + 1}/$maxAttempts '
+                '(${e.statusCode})'} — retry ${attempt + 1}/$maxAttempts '
             'in ${waitSecs + 2}s...');
         await Future.delayed(Duration(seconds: waitSecs + 2));
       } on TimeoutException {

@@ -15,8 +15,7 @@ void main() {
     });
 
     test('falls back to a sane default on garbage', () {
-      expect(parseWmSize('error: no devices'),
-          {'width': 1080, 'height': 2400});
+      expect(parseWmSize('error: no devices'), {'width': 1080, 'height': 2400});
     });
   });
 
@@ -38,7 +37,8 @@ void main() {
     });
 
     test('recognizes launcher packages', () {
-      expect(isLauncherPackage('com.google.android.apps.nexuslauncher'), isTrue);
+      expect(
+          isLauncherPackage('com.google.android.apps.nexuslauncher'), isTrue);
       expect(isLauncherPackage('com.android.launcher3'), isTrue);
       expect(isLauncherPackage('com.dangi.app'), isFalse);
       expect(isLauncherPackage(null), isFalse);
@@ -47,8 +47,8 @@ void main() {
 
   group('escapeAdbShellText', () {
     test('encodes spaces the way `input text` expects', () {
-      expect(escapeAdbShellText('hello world'), 'hello%s%sworld'
-          .replaceFirst('%s%s', '%s')); // one space → one %s
+      expect(escapeAdbShellText('hello world'),
+          'hello%s%sworld'.replaceFirst('%s%s', '%s')); // one space → one %s
     });
 
     test('escapes device-shell metacharacters', () {

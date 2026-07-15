@@ -152,8 +152,7 @@ void main() {
   });
 
   group('generated tests', () {
-    test('smoke test pumps the real app class, not a nested child widget',
-        () {
+    test('smoke test pumps the real app class, not a nested child widget', () {
       final smoke = files['home_screen_smoke_test.dart']!;
       expect(smoke, contains('pumpAppCollecting(tester, const MyApp())'));
       expect(smoke, isNot(contains('Text(')));
@@ -181,8 +180,8 @@ void main() {
         () {
       expect(files.keys, contains('known_bugs_test.dart'));
       expect(files['known_bugs_test.dart'], contains('MEMORY LEAK'));
-      expect(files['home_screen_smoke_test.dart'],
-          isNot(contains('MEMORY LEAK')));
+      expect(
+          files['home_screen_smoke_test.dart'], isNot(contains('MEMORY LEAK')));
     });
 
     test('perf test header does not recommend the broken flutter drive', () {

@@ -28,7 +28,8 @@ void main() {
   });
 
   group('detectScreenNameFromTree', () {
-    Map<String, dynamic> node(String type, [List<Map<String, dynamic>> kids = const []]) =>
+    Map<String, dynamic> node(String type,
+            [List<Map<String, dynamic>> kids = const []]) =>
         {'widgetRuntimeType': type, 'children': kids};
 
     test('picks the page over a nested leaf *Widget (the AvatarWidget decoy)',

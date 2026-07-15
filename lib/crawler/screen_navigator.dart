@@ -29,16 +29,30 @@ const int kScreenTierSkip = 99; // not a screen name at all
 int screenNameTier(String type) {
   final tl = type.toLowerCase();
   if (tl.contains('splash') || tl.contains('init')) return kScreenTierSplash;
-  if (tl.contains('page') || tl.contains('screen')) return kScreenTierPageScreen;
+  if (tl.contains('page') || tl.contains('screen')) {
+    return kScreenTierPageScreen;
+  }
   if (type.endsWith('Widget')) return kScreenTierWidget;
   return kScreenTierSkip;
 }
 
 const _kLeaveKeywords = {
-  'leave', 'exit', 'quit', 'yes', 'ok', 'confirm', 'discard', 'go back',
+  'leave',
+  'exit',
+  'quit',
+  'yes',
+  'ok',
+  'confirm',
+  'discard',
+  'go back',
 };
 const _kStayKeywords = {
-  'stay', 'no', 'cancel', 'resume', 'keep', 'continue',
+  'stay',
+  'no',
+  'cancel',
+  'resume',
+  'keep',
+  'continue',
 };
 
 /// True when [desc] is a dialog "leave/confirm" button. Uses WHOLE-WORD
@@ -412,8 +426,7 @@ class ScreenNavigator {
     }
 
     if (_isWebViewScreen(screenName)) {
-      print(
-          '  🌐 WebView screen "$screenName" — skipping tappable exploration'
+      print('  🌐 WebView screen "$screenName" — skipping tappable exploration'
           ' (web content, not Flutter routes).');
       return;
     }

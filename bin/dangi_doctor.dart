@@ -103,11 +103,12 @@ void main(List<String> argv) async {
   // 2 taps would be landing on the wrong device.
   if (deviceId != null) {
     try {
-      final activities =
-          await AdbRunner.run(deviceId, ['shell', 'dumpsys', 'activity', 'activities']);
+      final activities = await AdbRunner.run(
+          deviceId, ['shell', 'dumpsys', 'activity', 'activities']);
       final fg = parseForegroundPackage(activities.stdout.toString());
       if (fg == null || isLauncherPackage(fg)) {
-        print('  ⚠️  Device $deviceId shows ${fg ?? 'no'} app in the foreground '
+        print(
+            '  ⚠️  Device $deviceId shows ${fg ?? 'no'} app in the foreground '
             '— if your Flutter app is on a different device, pass --device <id>.');
       }
     } catch (_) {}
@@ -116,7 +117,8 @@ void main(List<String> argv) async {
   // Jank budget follows the device's real refresh rate — judging a 120Hz
   // phone against 60Hz's 16ms grades a visibly janky app as "A".
   if (deviceId != null) {
-    final display = await AdbRunner.run(deviceId, ['shell', 'dumpsys', 'display']);
+    final display =
+        await AdbRunner.run(deviceId, ['shell', 'dumpsys', 'display']);
     final hz = parseDisplayRefreshRate(display.stdout.toString());
     if (hz != null) {
       PerformanceCapture.frameBudgetMs = budgetMsForRefreshRate(hz);
@@ -177,22 +179,22 @@ void main(List<String> argv) async {
         // nor the test generation and HTML report, which don't need AI.
         try {
           final aiReport = await aiClient.diagnose(
-          issues: screen.issues
-              .map((i) => {
-                    'severity': i.severity,
-                    'type': i.type,
-                    'file': i.file,
-                    'line': i.line,
-                    'message': i.message,
-                  })
-              .toList(),
-          totalWidgets: screen.totalWidgets,
-          maxDepth: screen.maxDepth,
-          widgetCounts: {},
-          screenName: screen.name,
-          perfGrade: screen.performance?.grade ?? 'N/A',
-          avgBuildMs: screen.performance?.avgBuildMs ?? 0,
-          jankRate: screen.performance?.jankRate ?? 0,
+            issues: screen.issues
+                .map((i) => {
+                      'severity': i.severity,
+                      'type': i.type,
+                      'file': i.file,
+                      'line': i.line,
+                      'message': i.message,
+                    })
+                .toList(),
+            totalWidgets: screen.totalWidgets,
+            maxDepth: screen.maxDepth,
+            widgetCounts: {},
+            screenName: screen.name,
+            perfGrade: screen.performance?.grade ?? 'N/A',
+            avgBuildMs: screen.performance?.avgBuildMs ?? 0,
+            jankRate: screen.performance?.jankRate ?? 0,
             jankyFrames: screen.performance?.jankyFrames ?? 0,
             totalFrames: screen.performance?.totalFrames ?? 0,
           );

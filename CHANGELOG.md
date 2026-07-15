@@ -1,3 +1,12 @@
+## 0.3.1
+
+- **Fixed a packaging bug that broke 0.3.0 on pub.dev.** The `.pubignore`
+  entry `knowledge/` was unanchored, so it also matched `lib/ai/knowledge/`
+  and stripped the entire AI layer (providers, prompt assembler, bundled
+  knowledge) out of the published archive — `bin/dangi_doctor.dart` then
+  imported files that weren't there, failing static analysis. Root-level
+  ignores are now anchored with a leading slash. No functional changes.
+
 ## 0.3.0
 
 Broad correctness and reliability pass across the whole tool, with the crawler

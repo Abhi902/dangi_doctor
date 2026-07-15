@@ -19,9 +19,12 @@ include: package:lints/recommended.yaml
 #   rules:
 #     - camel_case_types
 
-# analyzer:
-#   exclude:
-#     - path/to/excluded/files/**
+analyzer:
+  exclude:
+    # A Flutter fixture app inside a pure-Dart package — excluded from the
+    # published archive (.pubignore) and from analysis so `dart analyze` at
+    # the repo root doesn't choke on its unresolved Flutter imports.
+    - playground/**
 
 # For more information about the core and recommended set of lints, see
 # https://dart.dev/go/core-lints

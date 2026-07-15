@@ -227,8 +227,8 @@ class AppAnalyser {
 
     // Wrapped form: runApp(Provider(child: MyApp())) — take the LAST
     // (innermost) child: in the argument. Otherwise the direct form.
-    final childMatches =
-        RegExp(r'child:\s*(?:const\s+)?(\w+)\s*\(([^)]*)\)').allMatches(runAppBlock);
+    final childMatches = RegExp(r'child:\s*(?:const\s+)?(\w+)\s*\(([^)]*)\)')
+        .allMatches(runAppBlock);
     final directMatch =
         RegExp(r'^\s*(?:const\s+)?(\w+)\s*\(').firstMatch(runAppBlock);
 
