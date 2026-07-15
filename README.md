@@ -129,6 +129,20 @@ On first run, Dangi Doctor will ask how to connect:
 
 Choose **1** to let Dangi Doctor launch your app, or **2** to paste the VM service URL from a running `flutter run --debug` session.
 
+### Command-line options
+
+| Flag | Description |
+|---|---|
+| `--project <path>` | Flutter project path (overrides `DANGI_PROJECT` and cwd auto-detection) |
+| `--vm-url <ws://…>` | VM service URL of an already-running app (skips the connect prompt) |
+| `--device <id>` | ADB device id for widget taps (auto-detected if omitted) |
+| `--no-ai` | Crawler + static analysis only; skip AI diagnosis |
+| `--version` | Print the version and exit |
+| `--help` | Print usage and exit |
+
+Fully non-interactive runs are supported for CI — pass `--project`, `--vm-url`,
+and `--no-ai` and Dangi Doctor never prompts; a crash exits non-zero.
+
 ### Run generated tests
 
 ```bash
@@ -151,7 +165,7 @@ You do not need a paid subscription to get AI diagnosis.
 | Provider | Cost | How to get a key |
 |---|---|---|
 | **Groq** | Free tier (14,400 req/day) | Sign up at `console.groq.com` — no credit card |
-| **Ollama** | Free, runs locally | Install from `ollama.com`, run `ollama pull llama3` |
+| **Ollama** | Free, runs locally | Install from `ollama.com`, run `ollama pull llama3.1` |
 | Claude | Paid | `console.anthropic.com` |
 | OpenAI | Paid | `platform.openai.com` |
 | Gemini | Paid | `aistudio.google.com` |
@@ -162,11 +176,24 @@ If no API key is set, Dangi Doctor asks at runtime which provider to use. Choose
 
 | Variable | Description |
 |---|---|
-| `DANGI_PROJECT` | Path to your Flutter project (auto-detected from cwd if omitted) |
-| `CLAUDE_API_KEY` | Claude API key for AI diagnosis |
+| `DANGI_PROJECT` | Path to your Flutter project (auto-detected from cwd; `--project` takes precedence) |
+| `ANTHROPIC_API_KEY` | Claude API key for AI diagnosis (`CLAUDE_API_KEY` also accepted) |
 | `OPENAI_API_KEY` | OpenAI API key for AI diagnosis |
 | `GEMINI_API_KEY` | Gemini API key for AI diagnosis |
 | `GROQ_API_KEY` | Groq API key for AI diagnosis |
+
+Model choices default to current models but are all overridable, so a model
+rename never requires an update:
+
+| Variable | Default |
+|---|---|
+| `DANGI_CLAUDE_MODEL` | `claude-opus-4-8` |
+| `DANGI_OPENAI_MODEL` | `gpt-4o` |
+| `DANGI_GEMINI_MODEL` | `gemini-2.5-pro` |
+| `DANGI_GROQ_MODEL` | `llama-3.1-8b-instant` |
+| `DANGI_OLLAMA_MODEL` | `llama3.1` |
+| `DANGI_OLLAMA_URL` | `http://localhost:11434` |
+| `DANGI_MAX_TOKENS` | `4096` |
 
 ---
 
@@ -183,19 +210,19 @@ dart run dangi_doctor
         │
         ├── 3. Wait for splash screen to dismiss
         │
-        ├── 4. Crawl all screens
-        │         └── Tap nav triggers (bottom nav, buttons, drawers)
-        │         └── Capture widget tree per screen via VM service
-        │         └── Measure frame performance via VM Timeline API
-        │         └── Detect widget tree issues (nesting, anti-patterns)
-        │
-        ├── 5. AI diagnosis per screen (if API key present)
-        │         └── 3-layer knowledge prompt → Claude/GPT/Gemini
-        │
-        ├── 6. Static analysis
-        │         └── Scan lib/ for KnownRisk patterns
+        ├── 4. Static analysis
+        │         └── Scan lib/ for KnownRisk patterns + detect routes
         │         └── LateInitializationError, setState after dispose,
         │             stream leaks, build() side effects
+        │
+        ├── 5. Crawl all screens
+        │         └── Tap nav triggers (bottom nav, buttons, drawers)
+        │         └── Capture widget tree per screen via VM service
+        │         └── Measure frame performance via Flutter.Frame events
+        │         └── Detect widget tree issues (nesting, anti-patterns)
+        │
+        ├── 6. AI diagnosis per screen (if API key present)
+        │         └── 3-layer knowledge prompt → Claude/GPT/Gemini
         │
         ├── 7. Generate integration tests
         │         └── integration_test/dangi_doctor/<screen>_smoke_test.dart
