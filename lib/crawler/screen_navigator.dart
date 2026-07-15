@@ -165,6 +165,14 @@ class ScreenNavigator {
     for (final route in analysis!.routes) {
       if (discoveredScreens.length >= maxScreens) break;
 
+      // Phase 2 vets tappable labels before tapping; route injection needs
+      // the same gate — never navigate a real app to /logout, /deleteAccount
+      // or a checkout flow just because the route table lists it.
+      if (_isDangerousLabel(route)) {
+        print('  ⏭️  Skipping dangerous route: $route');
+        continue;
+      }
+
       print('  🔀 Navigating to route: $route');
 
       // Start recording before navigation so transition frames are captured.
@@ -228,9 +236,15 @@ class ScreenNavigator {
           _exploredTappables.values.fold(0, (s, v) => s + v.length);
       print('  📂 Previous run: ${_exploredTappables.length} screens'
           ', $totalExplored taps already explored.');
-      stdout.write(
-          '  Continue from where we left off? [Y = continue / N = restart]: ');
-      final answer = stdin.readLineSync()?.trim().toLowerCase() ?? 'y';
+      // Default to resuming when there is no terminal to ask on (CI).
+      String answer = 'y';
+      if (stdin.hasTerminal) {
+        stdout.write(
+            '  Continue from where we left off? [Y = continue / N = restart]: ');
+        answer = stdin.readLineSync()?.trim().toLowerCase() ?? 'y';
+      } else {
+        print('  ▶️  No terminal — resuming previous exploration by default.');
+      }
       if (answer == 'n' || answer == 'no') {
         _exploredTappables.clear();
         print('  🔄 Starting fresh — re-exploring everything.');
@@ -533,6 +547,8 @@ class ScreenNavigator {
     'purchase',
     'buy',
     'pay now',
+    'checkout',
+    'unsubscribe',
     'uninstall',
     'clear all',
     'reset',
