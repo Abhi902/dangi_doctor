@@ -8,3 +8,10 @@ pubspec.lock
 
 build/
 test_report.dart
+
+# On-device crawler test fixture — keep source, ignore build + crawl artifacts
+playground/build/
+playground/.dart_tool/
+playground/.dangi_doctor/
+playground/integration_test/
+playground/pubspec.lock

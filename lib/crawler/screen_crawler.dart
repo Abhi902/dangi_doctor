@@ -106,6 +106,12 @@ class ScreenCrawler {
         if (failCount > 10) {
           // Connection repeatedly failing — likely port not forwarded
           print('\n  ⚠️  Cannot read widget tree.');
+          if (!stdin.hasTerminal) {
+            // Never block on a prompt in CI — fail with the fix instead.
+            throw Exception(
+                'Cannot read widget tree after $failCount attempts. '
+                'Check the adb port forward: adb -s <device_id> forward tcp:8181 tcp:8181');
+          }
           print('  Run this in another terminal:');
           print('  adb -s <device_id> forward tcp:8181 tcp:8181');
           print('  Then press Enter to retry...');

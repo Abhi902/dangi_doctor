@@ -6,12 +6,14 @@ Dangi Doctor connects to your live Flutter app, crawls every screen automaticall
 
 ---
 
-## What's new in v0.2.3
+## What's new in v0.3.0
 
-- **AI pooling for large screens** — when a screen has too many issues for a single API call, they are automatically split into batches of 40, each analysed separately, then combined into one unified health report.
-- **Auto-retry on rate limits** — Groq/OpenAI 429 errors are handled silently: the wait time is parsed from the error response and the request retries automatically.
-- **Groq free tier now reliable** — switched to `llama-3.1-8b-instant` (30 000 TPM) so Groq works without hitting limits on typical Flutter projects.
-- **Smarter crawler** — tappable exploration now waits for async-loaded content to stabilise, and post-tap waits poll for screen changes instead of a fixed delay.
+- **The weekly knowledge updater works again** — all the Flutter doc sources had moved and were silently 404ing; they're repaired, the updater now fails loudly instead of shipping placeholders, and each release bundles current knowledge.
+- **Generated tests compile** — the interaction and performance tests referenced a helper that was never emitted; that's fixed, along with import paths, dynamic keys, and Cupertino-app support.
+- **Crawler correctness (verified on a live Android device)** — accurate screen naming through pushed route stacks, navigation that returns home without exiting the app, whole-word dialog-button matching, and coordinate re-resolution after returning from a child screen. It also no longer kills unrelated `flutter run`/adb sessions on your machine.
+- **Real performance numbers** — frames read from `Flutter.Frame` events, actual memory usage, and a jank budget that follows the device's real refresh rate (120 Hz → 8.3 ms, not a hardcoded 16 ms).
+- **Faster, safer AI diagnosis** — cross-screen prompt caching (~90% cheaper input), real retries/timeouts, current model defaults, and the Gemini key no longer travelling in the request URL.
+- **Proper CLI** — `--help`, `--version`, `--project`, `--vm-url`, `--device`, `--no-ai`; honest exit codes; safe to run in CI.
 
 ---
 
@@ -98,7 +100,7 @@ Or add to your Flutter project's dev dependencies:
 
 ```yaml
 dev_dependencies:
-  dangi_doctor: ^0.1.0
+  dangi_doctor: ^0.3.0
 ```
 
 ---
@@ -209,7 +211,7 @@ dart run dangi_doctor
 
 ## Knowledge auto-update
 
-Layer 1 knowledge is bundled as a Dart constant in the package and updated weekly by a GitHub Actions workflow that pulls from the Flutter GitHub repo. You get the latest Flutter version notes, breaking changes, and bug patterns every time you run `dart pub upgrade dangi_doctor`.
+Layer 1 knowledge is bundled as a Dart constant in the package. A weekly GitHub Actions workflow refreshes it in the repo from the Flutter GitHub repo and flutter.dev docs, and every dangi_doctor release ships the knowledge current at release time — so `dart pub upgrade dangi_doctor` picks up whatever the newest published version bundles. Layer 2 (community anti-patterns) is maintained in [`knowledge/community_patterns.md`](knowledge/community_patterns.md) — PRs welcome.
 
 To update manually (for contributors):
 
@@ -234,7 +236,7 @@ integration_test/
 .dangi_doctor/
   project.json                        ← Layer 3 project fingerprint
   report_<timestamp>.html             ← HTML health report
-  vm_service_url.txt                  ← cached VM URL for reconnection
+  vm_url.txt                          ← cached VM URL for reconnection
 ```
 
 ---

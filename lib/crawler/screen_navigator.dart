@@ -9,6 +9,111 @@ import 'adb_runner.dart';
 import 'vm_evaluator.dart';
 
 /// A single discovered screen with its full analysis results.
+/// A screen-name candidate found while walking the widget tree, ranked by
+/// [tier] (how screen-like the name is) then by [depth] (shallowest wins).
+class _ScreenCandidate {
+  final String name;
+  final int depth;
+  final int tier;
+  _ScreenCandidate(this.name, this.depth, this.tier);
+}
+
+const int kScreenTierPageScreen = 0; // contains "page"/"screen" — a real screen
+const int kScreenTierWidget = 1; // ends in "Widget" only — likely a component
+const int kScreenTierSplash = 2; // splash/init — last resort
+const int kScreenTierSkip = 99; // not a screen name at all
+
+/// Rank a widget type name by how screen-like it is (lower = more screen-like).
+/// FlutterFlow names screens `HomePageWidget` (ends in Widget but contains
+/// "page"); component leaves (AvatarWidget, IconWidget) contain neither.
+int screenNameTier(String type) {
+  final tl = type.toLowerCase();
+  if (tl.contains('splash') || tl.contains('init')) return kScreenTierSplash;
+  if (tl.contains('page') || tl.contains('screen')) return kScreenTierPageScreen;
+  if (type.endsWith('Widget')) return kScreenTierWidget;
+  return kScreenTierSkip;
+}
+
+const _kLeaveKeywords = {
+  'leave', 'exit', 'quit', 'yes', 'ok', 'confirm', 'discard', 'go back',
+};
+const _kStayKeywords = {
+  'stay', 'no', 'cancel', 'resume', 'keep', 'continue',
+};
+
+/// True when [desc] is a dialog "leave/confirm" button. Uses WHOLE-WORD
+/// matching — substring matching taps "B**ook**ing" for "ok" and
+/// "E**yes** Only" for "yes".
+bool isLeaveDialogLabel(String desc) {
+  final words = desc
+      .toLowerCase()
+      .split(RegExp(r'[^a-z]+'))
+      .where((w) => w.isNotEmpty)
+      .toSet();
+  if (words.any(_kStayKeywords.contains)) return false;
+  if (desc.toLowerCase().contains('go back')) return true; // two-word phrase
+  return words.any(_kLeaveKeywords.contains);
+}
+
+/// Widget types that end in Page/Screen/Widget but are structural, not
+/// content screens.
+const kScreenSkipTypes = {
+  'Scaffold',
+  'SizedBox',
+  'Container',
+  'Offstage',
+  'TickerMode',
+  'KeepAlive',
+  'RootWidget',
+  'FadeWidget',
+  'FadeInEffect',
+  'AnimatedSwitcher',
+  'AnimatedContainer',
+  'Opacity',
+};
+
+/// Detect the visible screen name from a Flutter inspector widget tree.
+/// Picks the most screen-like name (a `*Page`/`*Screen`, or a FlutterFlow
+/// `*PageWidget`) and, among equally screen-like names, the DEEPEST — which
+/// is the top of a pushed navigation stack. Returns 'UnknownScreen' when the
+/// tree has no usable names (e.g. an obfuscated release build).
+String detectScreenNameFromTree(Map<String, dynamic> tree) {
+  _ScreenCandidate? best;
+  void walk(dynamic node, int depth) {
+    if (node == null) return;
+    final type = node['widgetRuntimeType']?.toString() ?? '';
+    final tl = type.toLowerCase();
+    if ((type.endsWith('Page') ||
+            type.endsWith('Screen') ||
+            type.endsWith('Widget')) &&
+        !type.startsWith('_') &&
+        type != 'Scaffold' &&
+        type != 'ScreenUtilInit' &&
+        !kScreenSkipTypes.contains(type) &&
+        !tl.contains('navbar') &&
+        !tl.contains('bottomnav') &&
+        !tl.contains('bottombar') &&
+        !tl.contains('navwidget')) {
+      final tier = screenNameTier(type);
+      // Better = lower tier, then deeper, then later in DFS (>= on equal
+      // depth) — pushed routes are same-depth siblings within the Navigator's
+      // overlay, with the active route appearing last.
+      if (tier != kScreenTierSkip &&
+          (best == null ||
+              tier < best!.tier ||
+              (tier == best!.tier && depth >= best!.depth))) {
+        best = _ScreenCandidate(type, depth, tier);
+      }
+    }
+    for (final child in (node['children'] as List? ?? [])) {
+      walk(child, depth + 1);
+    }
+  }
+
+  walk(tree, 0);
+  return best?.name ?? 'UnknownScreen';
+}
+
 class DiscoveredScreen {
   /// Widget type name of the root widget (e.g. `HomePageWidget`).
   final String name;
@@ -165,6 +270,14 @@ class ScreenNavigator {
     for (final route in analysis!.routes) {
       if (discoveredScreens.length >= maxScreens) break;
 
+      // Phase 2 vets tappable labels before tapping; route injection needs
+      // the same gate — never navigate a real app to /logout, /deleteAccount
+      // or a checkout flow just because the route table lists it.
+      if (_isDangerousLabel(route)) {
+        print('  ⏭️  Skipping dangerous route: $route');
+        continue;
+      }
+
       print('  🔀 Navigating to route: $route');
 
       // Start recording before navigation so transition frames are captured.
@@ -203,16 +316,37 @@ class ScreenNavigator {
         _visitedScreenNames.add(effectiveName);
         await _analyseAndRecord(newTree, effectiveName,
             navigatedVia: 'route:$route', startedCapture: routeCapture);
-
-        // Go back and wait
-        await _goBack();
-        await Future.delayed(const Duration(milliseconds: 1200));
       } else {
         print('     ↳ No new screen (still $effectiveName)');
-        // Go back just in case something pushed
-        await _goBack();
-        await Future.delayed(const Duration(milliseconds: 800));
       }
+
+      // Return home before the next route. We navigate with push() now, so a
+      // single BACK returns here; but if the app only accepted go() (which
+      // REPLACES the stack), BACK from the root would exit the app and kill
+      // the VM service. So verify we landed back on home, and if not, recover
+      // by re-navigating to the home route instead of pressing BACK again.
+      await _goBack();
+      await Future.delayed(const Duration(milliseconds: 1000));
+      if (_detectScreenName(await _captureTree()) != homeScreenName) {
+        await _returnHome(homeScreenName);
+      }
+    }
+  }
+
+  /// Best-effort return to the home screen without risking an app exit:
+  /// re-inject the home route (works even when go() replaced the stack), then
+  /// fall back to a couple of bounded BACK presses.
+  Future<void> _returnHome(String homeScreenName) async {
+    for (final homeRoute in const ['/', 'home', '/home']) {
+      if (await _evaluator.navigateTo(homeRoute)) {
+        await Future.delayed(const Duration(milliseconds: 800));
+        if (_detectScreenName(await _captureTree()) == homeScreenName) return;
+      }
+    }
+    for (var i = 0; i < 2; i++) {
+      if (_detectScreenName(await _captureTree()) == homeScreenName) return;
+      await _goBack();
+      await Future.delayed(const Duration(milliseconds: 600));
     }
   }
 
@@ -228,9 +362,15 @@ class ScreenNavigator {
           _exploredTappables.values.fold(0, (s, v) => s + v.length);
       print('  📂 Previous run: ${_exploredTappables.length} screens'
           ', $totalExplored taps already explored.');
-      stdout.write(
-          '  Continue from where we left off? [Y = continue / N = restart]: ');
-      final answer = stdin.readLineSync()?.trim().toLowerCase() ?? 'y';
+      // Default to resuming when there is no terminal to ask on (CI).
+      String answer = 'y';
+      if (stdin.hasTerminal) {
+        stdout.write(
+            '  Continue from where we left off? [Y = continue / N = restart]: ');
+        answer = stdin.readLineSync()?.trim().toLowerCase() ?? 'y';
+      } else {
+        print('  ▶️  No terminal — resuming previous exploration by default.');
+      }
       if (answer == 'n' || answer == 'no') {
         _exploredTappables.clear();
         print('  🔄 Starting fresh — re-exploring everything.');
@@ -286,30 +426,55 @@ class ScreenNavigator {
     print(
         '  🔍 ${tappables.length} tappable elements on $screenName (depth $depth)');
 
+    // After we navigate into a child screen and return, the layout may have
+    // scrolled or reordered — the coordinates captured above can be stale, so
+    // the label at (cx,cy) may no longer be the element we vetted. When this
+    // is set we re-resolve the pending element by label against a fresh dump
+    // before tapping (and skip it if it's gone).
+    var coordsMayBeStale = false;
+
     for (final el in tappables) {
       if (discoveredScreens.length >= maxScreens) break;
 
-      final tapKey = '$screenName@${el.cx},${el.cy}';
+      var cx = el.cx;
+      var cy = el.cy;
+      final desc = el.desc;
+
+      if (coordsMayBeStale) {
+        final fresh = await _getAllTappables();
+        final match = fresh
+            .where((e) => e.desc == desc && e.desc != 'tap(${e.cx},${e.cy})')
+            .toList();
+        if (match.isEmpty) {
+          // Element no longer present after the layout changed — skip it
+          // rather than tap whatever drifted into its old coordinates.
+          continue;
+        }
+        cx = match.first.cx;
+        cy = match.first.cy;
+        coordsMayBeStale = false;
+      }
+
+      final tapKey = '$screenName@$cx,$cy';
 
       // Skip if already explored in this session or a previous run.
-      if (_exploredTappables[screenName]?.contains('${el.cx},${el.cy}') ==
-          true) {
+      if (_exploredTappables[screenName]?.contains('$cx,$cy') == true) {
         continue;
       }
       if (_visitedScreenNames.contains(tapKey)) continue;
       _visitedScreenNames.add(tapKey);
 
       // Track for persistence.
-      (_exploredTappables[screenName] ??= {}).add('${el.cx},${el.cy}');
+      (_exploredTappables[screenName] ??= {}).add('$cx,$cy');
 
-      if (_isDangerousLabel(el.desc)) {
-        print('  ⚠️  Skipping "${el.desc}" — potentially destructive');
+      if (_isDangerousLabel(desc)) {
+        print('  ⚠️  Skipping "$desc" — potentially destructive');
         continue;
       }
 
       // Never tap Back/Close/Cancel — these navigate backward and would
       // break our position tracking. We handle returning ourselves.
-      if (_isBackwardNavButton(el.desc, cx: el.cx, cy: el.cy)) {
+      if (_isBackwardNavButton(desc, cx: cx, cy: cy)) {
         continue;
       }
 
@@ -327,8 +492,8 @@ class ScreenNavigator {
         tapCapture = null;
       }
 
-      print('  👆 Tapping "${el.desc}" at (${el.cx}, ${el.cy})...');
-      await AdbRunner.tap(deviceId!, el.cx, el.cy);
+      print('  👆 Tapping "$desc" at ($cx, $cy)...');
+      await AdbRunner.tap(deviceId!, cx, cy);
       await _waitForNavigation(nameBefore);
 
       final newTree = await _captureTree();
@@ -344,10 +509,10 @@ class ScreenNavigator {
             : (_inferNameFromFiles(newFiles, filesBefore) ?? newName);
 
         if (!_visitedScreenNames.contains(effectiveName)) {
-          print('  ✅ New screen: $effectiveName  ← "${el.desc}"');
+          print('  ✅ New screen: $effectiveName  ← "$desc"');
           _visitedScreenNames.add(effectiveName);
           await _analyseAndRecord(newTree, effectiveName,
-              navigatedVia: el.desc, startedCapture: tapCapture);
+              navigatedVia: desc, startedCapture: tapCapture);
           // Explore this new screen as a complete sub-path.
           await _exploreTappables(newTree, effectiveName,
               depth: depth + 1,
@@ -365,25 +530,13 @@ class ScreenNavigator {
           print('  ⚠️  Could not return to $screenName — stopping branch');
           return;
         }
+        // We navigated away and came back — the remaining coordinates in
+        // `tappables` may now be stale; re-resolve the next one by label.
+        coordsMayBeStale = true;
       }
       // No navigation → continue to next element without pressing back.
     }
   }
-
-  static const _skipTypes = {
-    'Scaffold',
-    'SizedBox',
-    'Container',
-    'Offstage',
-    'TickerMode',
-    'KeepAlive',
-    'RootWidget',
-    'FadeWidget',
-    'FadeInEffect',
-    'AnimatedSwitcher',
-    'AnimatedContainer',
-    'Opacity',
-  };
 
   // ─────────────────────────────────────────────────────────────────────────
   // Exact tappable element discovery via Android accessibility layer
@@ -533,6 +686,8 @@ class ScreenNavigator {
     'purchase',
     'buy',
     'pay now',
+    'checkout',
+    'unsubscribe',
     'uninstall',
     'clear all',
     'reset',
@@ -619,6 +774,10 @@ class ScreenNavigator {
         return false;
       }
       final screenBeforeBack = current;
+      // Capture what was on screen BEFORE back, so dialog detection can
+      // consider only genuinely-new buttons (the dialog's own), not the
+      // page's existing controls.
+      final tappablesBeforeBack = await _getAllTappables();
       await _goBack();
       await Future.delayed(const Duration(milliseconds: 800));
       // Only check for a dialog if Back didn't change the screen AND
@@ -626,7 +785,8 @@ class ScreenNavigator {
       final treeAfterBack = await _captureTree();
       final screenAfterBack = _detectScreenName(treeAfterBack);
       if (screenAfterBack == screenBeforeBack && !dialogDismissed) {
-        final dismissed = await _dismissConfirmationDialogIfPresent();
+        final dismissed =
+            await _dismissConfirmationDialogIfPresent(tappablesBeforeBack);
         if (dismissed) dialogDismissed = true;
         await Future.delayed(const Duration(milliseconds: 600));
       }
@@ -662,22 +822,21 @@ class ScreenNavigator {
   ///
   /// Keywords deliberately exclude "submit", "finish", and "end" — these are
   /// too destructive (e.g. they would submit a real in-progress test).
-  Future<bool> _dismissConfirmationDialogIfPresent() async {
+  Future<bool> _dismissConfirmationDialogIfPresent(
+      List<({int cx, int cy, String desc})> tappablesBeforeBack) async {
     if (deviceId == null || deviceId!.isEmpty) return false;
     final tappables = await _getAllTappables();
 
-    const leaveKeywords = [
-      'leave', 'exit', 'quit', 'yes', 'ok', 'confirm', 'close', 'go back',
-    ];
-    const stayKeywords = [
-      'stay', 'no', 'cancel', 'resume', 'keep', 'continue',
-    ];
+    // Only genuinely-NEW buttons can belong to a dialog that appeared after
+    // BACK. This is what stops us tapping a page's own "Booking"/"Save"
+    // button when no dialog is actually present.
+    final beforeCoords =
+        tappablesBeforeBack.map((e) => '${e.cx},${e.cy}').toSet();
+    final candidates =
+        tappables.where((e) => !beforeCoords.contains('${e.cx},${e.cy}'));
 
-    for (final el in tappables) {
-      final label = el.desc.toLowerCase();
-      final isLeave = leaveKeywords.any((k) => label.contains(k));
-      final isStay = stayKeywords.any((k) => label.contains(k));
-      if (isLeave && !isStay) {
+    for (final el in candidates) {
+      if (isLeaveDialogLabel(el.desc)) {
         print('  🚪 Confirmation dialog — tapping "${el.desc}" to leave');
         await AdbRunner.tap(deviceId!, el.cx, el.cy);
         await Future.delayed(const Duration(milliseconds: 600));
@@ -869,54 +1028,8 @@ class ScreenNavigator {
   /// "SplashScreen" and "_initialize" type names are skipped when a better
   /// match exists, because GoRouter keeps the root route in the tree even
   /// after navigation.
-  String _detectScreenName(Map<String, dynamic> tree) {
-    String? bestName;
-    String? splashFallback;
-
-    _walkForScreenName(tree, (name) {
-      final isSplashLike = name == 'SplashScreen' ||
-          name.toLowerCase().contains('splash') ||
-          name.toLowerCase().contains('init');
-
-      if (isSplashLike) {
-        splashFallback ??= name;
-      } else {
-        bestName = name; // overwritten with deepest non-splash match
-      }
-    });
-
-    return bestName ?? splashFallback ?? 'UnknownScreen';
-  }
-
-  void _walkForScreenName(dynamic node, void Function(String) onScreen) {
-    if (node == null) return;
-    final type = node['widgetRuntimeType']?.toString() ?? '';
-    final tl = type.toLowerCase();
-    // Use endsWith, not contains — custom screens end with Page/Screen/Widget.
-    // Framework widgets like PageView, PagedLayoutBuilder, PageController,
-    // PagedSliverList all CONTAIN "Page" but never END with it.
-    // Using contains caused PageView to be detected as the home screen.
-    if ((type.endsWith('Page') ||
-            type.endsWith('Screen') ||
-            type.endsWith('Widget')) &&
-        !type.startsWith('_') &&
-        type != 'Scaffold' &&
-        type != 'ScreenUtilInit' &&
-        !_skipTypes.contains(type) &&
-        // Exclude navigation-container widgets — they wrap page content but
-        // are not content screens themselves. Without this, NavBarWidget
-        // appears after page content in the GoRouter Navigator DFS traversal
-        // and overwrites the real screen name as _detectScreenName runs.
-        !tl.contains('navbar') &&
-        !tl.contains('bottomnav') &&
-        !tl.contains('bottombar') &&
-        !tl.contains('navwidget')) {
-      onScreen(type);
-    }
-    for (final child in (node['children'] as List? ?? [])) {
-      _walkForScreenName(child, onScreen);
-    }
-  }
+  String _detectScreenName(Map<String, dynamic> tree) =>
+      detectScreenNameFromTree(tree);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Device helpers

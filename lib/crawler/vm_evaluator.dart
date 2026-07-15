@@ -44,7 +44,7 @@ class VmEvaluator {
 
   /// Finds:
   ///  1. The library that DEFINES navigatorKey (via getObject variable scan).
-  ///  2. The live GlobalKey<NavigatorState> heap instance (via getInstances).
+  ///  2. The live `GlobalKey<NavigatorState>` heap instance (via getInstances).
   ///
   /// Must be called before [navigateTo].
   Future<void> init() async {
@@ -139,7 +139,7 @@ class VmEvaluator {
     }
   }
 
-  /// Locates the GlobalKey<NavigatorState> object in the isolate heap.
+  /// Locates the `GlobalKey<NavigatorState>` object in the isolate heap.
   ///
   /// Strategy:
   ///   a. Scan flutter widget framework library for the GlobalKey class.
@@ -242,7 +242,11 @@ class VmEvaluator {
   /// Returns true if at least one evaluate call triggered navigation.
   Future<bool> navigateTo(String route) async {
     if (!_evaluateAvailable) return false;
-    final absPath = route.startsWith('/') ? route : '/$route';
+    // Route strings are interpolated into Dart source below — escape quotes,
+    // backslashes and $ so a route like `/x'y` or `/user/$id` can't break the
+    // expression (or inject one).
+    final absPath = _dartLiteral(route.startsWith('/') ? route : '/$route');
+    final nameLit = _dartLiteral(route);
     final v = _firstNav;
     _firstNav = false;
 
@@ -251,14 +255,27 @@ class VmEvaluator {
     // We inject the live GlobalKey instance as `_nk` and evaluate go_router
     // extension methods in nav.dart's library context (where they are in scope
     // via the circular import → export chain).
+    //
+    // PREFER push over go: go_router's go() REPLACES the stack, so a
+    // subsequent system BACK from the (now root) route finishes the activity
+    // and kills the VM service mid-crawl. push() keeps the stack, so BACK
+    // returns to where we were. We fall back to go() only if push isn't
+    // accepted.
     if (_navKeyObjectId != null && _bestLibId != null) {
       final scope = {'_nk': _navKeyObjectId!};
 
-      if (await _eval("_nk.currentContext?.goNamed('$route')", _bestLibId!,
+      if (await _eval("_nk.currentContext?.pushNamed('$nameLit')", _bestLibId!,
           verbose: v, scope: scope)) {
         return true;
       }
-
+      if (await _eval("_nk.currentContext?.push('$absPath')", _bestLibId!,
+          verbose: v, scope: scope)) {
+        return true;
+      }
+      if (await _eval("_nk.currentContext?.goNamed('$nameLit')", _bestLibId!,
+          verbose: v, scope: scope)) {
+        return true;
+      }
       if (await _eval("_nk.currentContext?.go('$absPath')", _bestLibId!,
           verbose: v, scope: scope)) {
         return true;
@@ -266,7 +283,7 @@ class VmEvaluator {
 
       // FlutterFlow's auth-bypassing helper
       if (await _eval(
-          "_nk.currentContext?.goNamedAuth('$route', true)", _bestLibId!,
+          "_nk.currentContext?.goNamedAuth('$nameLit', true)", _bestLibId!,
           verbose: v, scope: scope)) {
         return true;
       }
@@ -298,7 +315,8 @@ class VmEvaluator {
     };
     for (final varName in vars) {
       for (final libId in _allLibIds.take(3)) {
-        if (await _eval("$varName.goNamed('$route')", libId)) return true;
+        if (await _eval("$varName.push('$absPath')", libId)) return true;
+        if (await _eval("$varName.goNamed('$nameLit')", libId)) return true;
         if (await _eval("$varName.go('$absPath')", libId)) return true;
       }
     }
@@ -315,6 +333,13 @@ class VmEvaluator {
     return false;
   }
 
+  /// Escape a string for safe interpolation inside a single-quoted Dart
+  /// expression literal.
+  static String _dartLiteral(String s) => s
+      .replaceAll(r'\', r'\\')
+      .replaceAll(r'$', r'\$')
+      .replaceAll("'", r"\'");
+
   // ───────────────────────────────────────────────────────────────────────────
   // Evaluate helper
   // ───────────────────────────────────────────────────────────────────────────
@@ -329,10 +354,18 @@ class VmEvaluator {
       final result = await vmService
           .evaluate(isolateId, targetId, expression, scope: scope)
           .timeout(const Duration(milliseconds: 2000));
+      // The RPC returning without throwing does NOT mean navigation happened.
+      // An ErrorRef (e.g. "no route named X", a thrown exception) or a
+      // Sentinel (collected/expired object) both come back as a normal
+      // Response — treat only a real InstanceRef as success. (go/push return
+      // void → InstanceRef of kind Null, which is still success; a genuine
+      // failure is an ErrorRef, not a Null instance.)
+      final ok = result is InstanceRef;
       if (verbose) {
-        print('  ✅ eval OK: $expression → ${result.runtimeType}');
+        print('  ${ok ? '✅ eval OK' : '❌ eval non-instance'}: '
+            '$expression → ${result.runtimeType}');
       }
-      return true;
+      return ok;
     } on RPCError catch (e) {
       final detail = e.data?.toString() ?? '';
       if (detail.contains('No compilation service')) {

@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:dangi_doctor/ai/knowledge/ai_providers.dart';
+import 'package:dangi_doctor/analysis/performance.dart';
 import 'package:dangi_doctor/ai/knowledge/project_fingerprint.dart';
 import 'package:dangi_doctor/crawler/screen_navigator.dart';
 import 'package:dangi_doctor/generator/app_analyser.dart';
@@ -9,8 +10,27 @@ import 'package:dangi_doctor/crawler/screen_crawler.dart';
 import 'package:dangi_doctor/crawler/vm_locator.dart';
 import 'package:dangi_doctor/generator/test_generator.dart';
 import 'package:dangi_doctor/report/html_report.dart';
+import 'package:dangi_doctor/src/cli_config.dart';
 
-void main() async {
+void main(List<String> argv) async {
+  final CliConfig config;
+  try {
+    config = parseCliArgs(argv);
+  } on FormatException catch (e) {
+    stderr.writeln('❌ ${e.message}\n');
+    stderr.writeln(usage());
+    exitCode = 64; // EX_USAGE
+    return;
+  }
+  if (config.showHelp) {
+    print(usage());
+    return;
+  }
+  if (config.showVersion) {
+    print('dangi_doctor $kDangiVersion');
+    return;
+  }
+
   print('');
   print('██████╗  █████╗ ███╗   ██╗ ██████╗ ██╗');
   print('██╔══██╗██╔══██╗████╗  ██║██╔════╝ ██║');
@@ -28,19 +48,27 @@ void main() async {
   print("Your Flutter app's personal physician 🩺");
   print('');
 
-  final projectPath = _resolveProjectPath();
+  final projectPath = _resolveProjectPath(config);
   print('📁 Project: $projectPath\n');
 
-  // Step 1 — pick AI provider
-  final provider = await AiProviderDetector.detect();
+  // Step 1 — pick AI provider (unless --no-ai)
+  final provider = config.noAi ? null : await AiProviderDetector.detect();
   if (provider == null) print('⚡ Crawler-only mode — no AI diagnosis.\n');
 
-  // Step 2 — get VM service URL
-  String? wsUrl = await VmServiceLocator.discover(projectPath: projectPath);
+  // Step 2 — get VM service URL: --vm-url wins, then the cached/scanned
+  // discovery, then the interactive menu (terminal only — never hang CI).
+  String? wsUrl =
+      config.vmUrl ?? await VmServiceLocator.discover(projectPath: projectPath);
   AppLauncher? launcher;
-  String? deviceId;
+  String? deviceId = config.device;
 
   if (wsUrl == null) {
+    if (!stdin.hasTerminal) {
+      stderr.writeln('❌ No VM service URL and no terminal to ask on. '
+          'Pass --vm-url <ws://...> (from a running `flutter run --debug`).');
+      exitCode = 64;
+      return;
+    }
     print('');
     print('┌─────────────────────────────────────────────┐');
     print('│  How do you want to connect?                │');
@@ -54,7 +82,7 @@ void main() async {
     if (choice == '1') {
       launcher = AppLauncher(projectPath: projectPath);
       wsUrl = await launcher.pickDeviceAndLaunch();
-      deviceId = launcher.pickedDeviceId;
+      deviceId ??= launcher.pickedDeviceId;
       await VmServiceLocator.saveUrl(projectPath, wsUrl);
     } else {
       wsUrl = await VmServiceLocator.askUser();
@@ -67,6 +95,35 @@ void main() async {
   // Detect device ID for ADB taps (Phase 2) — covers all connection paths:
   // launched via option 1, pasted URL via option 2, or auto-connected from cache.
   deviceId ??= await _detectAdbDevice();
+
+  // Cross-check the picked device actually runs the app under test. The VM
+  // service and the ADB device are discovered independently, so with several
+  // devices attached we could tap a *different* phone than the one hosting the
+  // app. If nothing (or only the launcher) is in the foreground, warn — Phase
+  // 2 taps would be landing on the wrong device.
+  if (deviceId != null) {
+    try {
+      final activities =
+          await AdbRunner.run(deviceId, ['shell', 'dumpsys', 'activity', 'activities']);
+      final fg = parseForegroundPackage(activities.stdout.toString());
+      if (fg == null || isLauncherPackage(fg)) {
+        print('  ⚠️  Device $deviceId shows ${fg ?? 'no'} app in the foreground '
+            '— if your Flutter app is on a different device, pass --device <id>.');
+      }
+    } catch (_) {}
+  }
+
+  // Jank budget follows the device's real refresh rate — judging a 120Hz
+  // phone against 60Hz's 16ms grades a visibly janky app as "A".
+  if (deviceId != null) {
+    final display = await AdbRunner.run(deviceId, ['shell', 'dumpsys', 'display']);
+    final hz = parseDisplayRefreshRate(display.stdout.toString());
+    if (hz != null) {
+      PerformanceCapture.frameBudgetMs = budgetMsForRefreshRate(hz);
+      print('  🖥️  Display: ${hz.toStringAsFixed(0)}Hz — frame budget '
+          '${PerformanceCapture.frameBudgetMs.toStringAsFixed(1)}ms');
+    }
+  }
 
   if (wsUrl.isEmpty) {
     print('❌ No VM service URL. Exiting.');
@@ -110,12 +167,16 @@ void main() async {
       final aiClient = AiClient(provider: provider, projectPath: projectPath);
       print('\n🤖 Running AI diagnosis on ${screens.length} screens...\n');
 
+      var aiFailures = 0;
       for (final screen in screens) {
         print('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         print('🤖 ${screen.name}');
         print('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-        final aiReport = await aiClient.diagnose(
+        // One failed diagnosis must not abort the remaining screens —
+        // nor the test generation and HTML report, which don't need AI.
+        try {
+          final aiReport = await aiClient.diagnose(
           issues: screen.issues
               .map((i) => {
                     'severity': i.severity,
@@ -132,12 +193,21 @@ void main() async {
           perfGrade: screen.performance?.grade ?? 'N/A',
           avgBuildMs: screen.performance?.avgBuildMs ?? 0,
           jankRate: screen.performance?.jankRate ?? 0,
-          jankyFrames: screen.performance?.jankyFrames ?? 0,
-          totalFrames: screen.performance?.totalFrames ?? 0,
-        );
+            jankyFrames: screen.performance?.jankyFrames ?? 0,
+            totalFrames: screen.performance?.totalFrames ?? 0,
+          );
 
-        print(aiReport);
-        print('');
+          print(aiReport);
+          print('');
+        } catch (e) {
+          aiFailures++;
+          print('⚠️  AI diagnosis failed for ${screen.name}: $e');
+          print('   Continuing with the remaining screens.\n');
+        }
+      }
+      if (aiFailures > 0) {
+        print('⚠️  AI diagnosis failed for $aiFailures of '
+            '${screens.length} screens.');
       }
     }
 
@@ -159,9 +229,10 @@ void main() async {
       projectPath: projectPath,
       projectName: projectPath.split('/').last,
     );
-  } catch (e) {
-    print('❌ Error: $e');
-    print(StackTrace.current);
+  } catch (e, st) {
+    stderr.writeln('❌ Error: $e');
+    stderr.writeln(st);
+    exitCode = 1; // a crashed run must not look like success to CI
   } finally {
     await crawler.disconnect();
     await launcher?.dispose();
@@ -189,6 +260,12 @@ Future<String?> _detectAdbDevice() async {
       print('  📱 Auto-detected device: $id');
       return id;
     }
+    if (!stdin.hasTerminal) {
+      final id = lines.first.split('\t').first.trim();
+      print('  📱 Multiple ADB devices, no terminal to ask — using first: $id'
+          ' (override with --device)');
+      return id;
+    }
     print('  Multiple ADB devices connected:');
     for (var i = 0; i < lines.length; i++) {
       print('    ${i + 1}. ${lines[i].split('\t').first.trim()}');
@@ -198,22 +275,38 @@ Future<String?> _detectAdbDevice() async {
     if (pick >= 1 && pick <= lines.length) {
       return lines[pick - 1].split('\t').first.trim();
     }
-  } catch (_) {}
+  } catch (e) {
+    print('  ⚠️  Could not run adb ($e) — is Android platform-tools '
+        'installed and on PATH? Phase 2 (widget taps) will be skipped.');
+  }
   return null;
 }
 
 /// Resolve the Flutter project path.
 ///
 /// Priority:
-/// 1. DANGI_PROJECT env var (CI / power users)
-/// 2. Current working directory if it contains a pubspec.yaml with a flutter dependency
-/// 3. Ask the user interactively
-String _resolveProjectPath() {
-  // 1. Explicit env var override
-  final envPath = Platform.environment['DANGI_PROJECT'];
-  if (envPath != null && envPath.isNotEmpty) return envPath;
+/// 1. --project flag
+/// 2. DANGI_PROJECT env var (CI / power users)
+/// 3. Current working directory if it contains a pubspec.yaml with a flutter dependency
+/// 4. Ask the user interactively (terminal only)
+///
+/// Explicit paths (1-2) are validated instead of trusted blindly — a typo
+/// used to surface as confusing downstream failures ("Package: app", 0 routes).
+String _resolveProjectPath(CliConfig config) {
+  for (final (label, explicit) in [
+    ('--project', config.project),
+    ('DANGI_PROJECT', Platform.environment['DANGI_PROJECT']),
+  ]) {
+    if (explicit == null || explicit.isEmpty) continue;
+    final error = validateProjectDir(explicit);
+    if (error != null) {
+      stderr.writeln('❌ $label: $error');
+      exit(64);
+    }
+    return explicit;
+  }
 
-  // 2. Auto-detect: current working directory is a Flutter project
+  // Auto-detect: current working directory is a Flutter project
   final cwd = Directory.current.path;
   final pubspec = File('$cwd/pubspec.yaml');
   if (pubspec.existsSync()) {
@@ -224,7 +317,13 @@ String _resolveProjectPath() {
     }
   }
 
-  // 3. Ask the user
+  if (!stdin.hasTerminal) {
+    stderr.writeln('❌ Not a Flutter project directory and no terminal to '
+        'ask on. Pass --project <path> or set DANGI_PROJECT.');
+    exit(64);
+  }
+
+  // Ask the user
   print('Could not auto-detect a Flutter project in the current directory.');
   print('Please provide the absolute path to your Flutter project:');
   stdout.write('Project path: ');
@@ -233,8 +332,9 @@ String _resolveProjectPath() {
     print('❌ No project path provided. Exiting.');
     exit(1);
   }
-  if (!Directory(input).existsSync()) {
-    print('❌ Directory not found: $input');
+  final error = validateProjectDir(input);
+  if (error != null) {
+    print('❌ $error');
     exit(1);
   }
   return input;

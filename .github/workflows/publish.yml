@@ -1,0 +1,22 @@
+# Publishes to pub.dev when a version tag (v1.2.3) is pushed.
+#
+# Uses pub.dev's GitHub Actions automated publishing (OIDC) — no secrets.
+# One-time setup: pub.dev → package → Admin → Automated publishing →
+# enable GitHub Actions for Abhi902/dangi_doctor with tag pattern v{{version}}.
+#
+# Release flow: bump version in pubspec.yaml + CHANGELOG.md, merge to main,
+# then `git tag v<version> && git push origin v<version>`.
+name: Publish to pub.dev
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  publish:
+    permissions:
+      id-token: write # required for pub.dev OIDC
+    uses: dart-lang/setup-dart/.github/workflows/publish.yml@v1
+    with:
+      environment: pub.dev

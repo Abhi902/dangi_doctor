@@ -40,12 +40,31 @@ class ProjectFingerprint {
     return fingerprint;
   }
 
-  /// Load existing fingerprint or scan if not found
+  /// Load existing fingerprint, or (re)scan when there is none, when it is
+  /// older than 7 days, or when pubspec.yaml changed since it was written —
+  /// otherwise new dependencies and state-management changes never reach
+  /// the prompt.
   Future<Map<String, dynamic>> loadOrScan() async {
     final file = File('$projectPath/.dangi_doctor/project.json');
     if (file.existsSync()) {
-      print('📂 Loading existing project fingerprint...');
-      return jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
+      try {
+        final cached =
+            jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
+        final scannedAt = DateTime.tryParse(cached['scanned_at'] as String? ?? '');
+        final pubspec = File('$projectPath/pubspec.yaml');
+        final pubspecChanged = scannedAt != null &&
+            pubspec.existsSync() &&
+            pubspec.lastModifiedSync().isAfter(scannedAt);
+        final stale = scannedAt == null ||
+            DateTime.now().difference(scannedAt) > const Duration(days: 7);
+        if (!stale && !pubspecChanged) {
+          print('📂 Loading existing project fingerprint...');
+          return cached;
+        }
+        print('🔄 Project fingerprint is stale — rescanning...');
+      } catch (_) {
+        // Corrupt cache → rescan.
+      }
     }
     return await scan();
   }
@@ -215,9 +234,12 @@ class ProjectFingerprint {
     for (final file in dartFiles) {
       try {
         final content = file.readAsStringSync();
-        // Find classes that extend StatelessWidget or StatefulWidget
-        final matches = RegExp(r'class (\w+) extends Stateless|StatefulWidget')
-            .allMatches(content);
+        // Find classes that extend StatelessWidget or StatefulWidget.
+        // The alternation must be grouped — an ungrouped `a|b` binds the
+        // whole left side, so StatefulWidget classes were never captured.
+        final matches =
+            RegExp(r'class (\w+) extends (?:StatelessWidget|StatefulWidget)')
+                .allMatches(content);
         for (final match in matches) {
           final className = match.group(1);
           if (className != null) customWidgets.add(className);
@@ -231,6 +253,11 @@ class ProjectFingerprint {
   Future<void> _save(Map<String, dynamic> fingerprint) async {
     final dir = Directory('$projectPath/.dangi_doctor');
     if (!dir.existsSync()) dir.createSync();
+
+    // Keep Dangi Doctor's working files out of the user's version control —
+    // project.json is machine-local cache, reports are per-run artifacts.
+    final gitignore = File('$projectPath/.dangi_doctor/.gitignore');
+    if (!gitignore.existsSync()) gitignore.writeAsStringSync('*\n');
 
     final file = File('$projectPath/.dangi_doctor/project.json');
     const encoder = JsonEncoder.withIndent('  ');

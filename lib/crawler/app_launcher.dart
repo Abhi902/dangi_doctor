@@ -30,35 +30,16 @@ class AppLauncher {
     return await _launchOnDevice(device);
   }
 
+  /// Clear only state a previous Dangi Doctor run may have left behind.
+  ///
+  /// This used to pkill -9 every `flutter run` on the machine (including the
+  /// user's own IDE debug sessions), kill whatever process was bound to
+  /// ports 8181-8185, and remove ALL adb forwards. A doctor must not kill
+  /// unrelated patients — we only drop our own default forward; if the
+  /// launch port turns out to be busy, the launch fails with a clear error
+  /// instead of us killing the owner.
   static Future<void> killAllFlutterProcesses() async {
-    print('🧹 Cleaning up stale Flutter processes...');
-    await Process.run('pkill', ['-9', '-f', 'flutter_tools.snapshot']);
-    await Process.run('pkill', ['-9', '-f', 'flutter run']);
-    await Process.run('pkill', ['-9', '-f', 'flutter_tester']);
-    await Process.run('pkill', ['-9', '-f', 'observatory-port']);
-    await Process.run('pkill', ['-9', '-f', 'disable-service-auth-codes']);
-    for (final port in [8181, 8182, 8183, 8184, 8185]) {
-      await _killPort(port);
-    }
-    // Clear all adb forwards so port 8181 is free
-    await AdbRunner.runGlobal(['forward', '--remove-all']);
-    await Future.delayed(const Duration(seconds: 2));
-    print('  ✅ All Flutter processes cleared\n');
-  }
-
-  static Future<void> _killPort(int port) async {
-    try {
-      final result = await Process.run('bash', ['-c', 'lsof -ti tcp:$port']);
-      final pids = result.stdout
-          .toString()
-          .trim()
-          .split('\n')
-          .where((p) => p.isNotEmpty)
-          .toList();
-      for (final pid in pids) {
-        await Process.run('kill', ['-9', pid]);
-      }
-    } catch (_) {}
+    await AdbRunner.runGlobal(['forward', '--remove', 'tcp:8181']);
   }
 
   Future<List<Map<String, dynamic>>> _getDevices() async {

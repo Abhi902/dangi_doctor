@@ -47,7 +47,9 @@ class AppAnalyser {
       packageName: packageName,
       appClass: mainInfo['appClass'] ?? 'MyApp',
       appArgs: mainInfo['appArgs'] ?? '',
+      appIsConst: mainInfo['isConst'] != null,
       appStateClass: appStateInfo['class'] ?? 'AppState',
+      appStateImportPath: appStateInfo['importPath'],
       appStateInitMethod: appStateInfo['initMethod'],
       appStateTokenField: appStateInfo['tokenField'],
       appStateJwtField: appStateInfo['jwtField'],
@@ -96,10 +98,12 @@ class AppAnalyser {
     ];
 
     String? content;
+    String? foundPath;
     for (final path in candidates) {
       final f = File(path);
       if (f.existsSync()) {
         content = f.readAsStringSync();
+        foundPath = path;
         break;
       }
     }
@@ -112,11 +116,18 @@ class AppAnalyser {
             .listSync(recursive: true)
             .whereType<File>()
             .where((f) => f.path.endsWith('app_state.dart'));
-        if (files.isNotEmpty) content = files.first.readAsStringSync();
+        if (files.isNotEmpty) {
+          content = files.first.readAsStringSync();
+          foundPath = files.first.path;
+        }
       }
     }
 
     if (content == null) return {};
+
+    // lib-relative path so the generated import matches where the file
+    // actually lives (it is frequently in a subfolder, not lib/ root).
+    final importPath = foundPath?.replaceFirst('$projectPath/lib/', '');
 
     // Find class name
     final classMatch =
@@ -179,13 +190,24 @@ class AppAnalyser {
       'userIdField': userIdField,
       'userNameField': userNameField,
       'emailField': emailField,
+      'importPath': importPath,
     };
   }
 
   String? _findStateField(String content, List<String> candidates) {
     for (final name in candidates) {
-      // Look for setter or field declaration
-      if (RegExp(r'\b' + name + r'\b').hasMatch(content)) return name;
+      // Only accept an actual field declaration or setter — a bare word
+      // match would fire on comments and named parameters (`name:` appears
+      // in virtually every Dart file) and generate assignments to fields
+      // that don't exist.
+      final fieldDecl = RegExp(
+          r'\b(?:String|int|double|num|bool|dynamic|var|late\s+\w+)\??\s+' +
+              name +
+              r'\s*[=;]');
+      final setterDecl = RegExp(r'\bset\s+' + name + r'\s*\(');
+      if (fieldDecl.hasMatch(content) || setterDecl.hasMatch(content)) {
+        return name;
+      }
     }
     return null;
   }
@@ -195,24 +217,40 @@ class AppAnalyser {
     if (!mainFile.existsSync()) return {};
     final content = mainFile.readAsStringSync();
 
-    // Find child: WidgetName(...) inside runApp
-    final childMatch =
-        RegExp(r'child:\s*(\w+)\s*\(([^)]*)\)').firstMatch(content);
-    final directMatch = RegExp(r'runApp\(\s*(?:const\s+)?(\w+)\s*\(([^)]*)\)')
-        .firstMatch(content);
+    // Only ever look INSIDE the runApp(...) argument. A `child:` anywhere
+    // else in main.dart (a build method, a theme builder) must not win, or
+    // we end up pumping `Padding` as "the app".
+    final runAppBlock = _extractRunAppArgument(content);
+    if (runAppBlock == null) {
+      return {'appClass': 'MyApp', 'appArgs': '', 'isConst': null};
+    }
+
+    // Wrapped form: runApp(Provider(child: MyApp())) — take the LAST
+    // (innermost) child: in the argument. Otherwise the direct form.
+    final childMatches =
+        RegExp(r'child:\s*(?:const\s+)?(\w+)\s*\(([^)]*)\)').allMatches(runAppBlock);
+    final directMatch =
+        RegExp(r'^\s*(?:const\s+)?(\w+)\s*\(').firstMatch(runAppBlock);
 
     String appClass;
     String appArgs;
 
-    if (childMatch != null) {
-      appClass = childMatch.group(1)!;
-      appArgs = childMatch.group(2)!.trim();
+    if (childMatches.isNotEmpty) {
+      final m = childMatches.last;
+      appClass = m.group(1)!;
+      appArgs = m.group(2)!.trim();
     } else if (directMatch != null) {
       appClass = directMatch.group(1)!;
-      appArgs = directMatch.group(2)!.trim();
+      final open = runAppBlock.indexOf('(', directMatch.start);
+      appArgs = _innerArgs(runAppBlock, open);
     } else {
-      return {'appClass': 'MyApp', 'appArgs': ''};
+      return {'appClass': 'MyApp', 'appArgs': '', 'isConst': null};
     }
+
+    // Emit `const AppClass()` only when the app's own source constructs it
+    // const — otherwise a non-const constructor fails to compile.
+    final isConst =
+        RegExp(r'const\s+' + appClass + r'\s*\(').hasMatch(runAppBlock);
 
     // Keep only literal args
     appArgs = appArgs.replaceAll(RegExp(r'\s+'), ' ').trim();
@@ -232,7 +270,38 @@ class AppAnalyser {
     return {
       'appClass': appClass,
       'appArgs': safeArgs,
+      'isConst': isConst ? 'true' : null,
     };
+  }
+
+  /// The text of runApp's argument, with balanced parentheses — or null if
+  /// there's no runApp call.
+  String? _extractRunAppArgument(String content) {
+    final start = content.indexOf(RegExp(r'runApp\s*\('));
+    if (start < 0) return null;
+    final open = content.indexOf('(', start);
+    var depth = 0;
+    for (var i = open; i < content.length; i++) {
+      if (content[i] == '(') depth++;
+      if (content[i] == ')') {
+        depth--;
+        if (depth == 0) return content.substring(open + 1, i).trim();
+      }
+    }
+    return null;
+  }
+
+  /// The balanced argument list of the call whose `(` is at [open].
+  String _innerArgs(String text, int open) {
+    var depth = 0;
+    for (var i = open; i < text.length; i++) {
+      if (text[i] == '(') depth++;
+      if (text[i] == ')') {
+        depth--;
+        if (depth == 0) return text.substring(open + 1, i).trim();
+      }
+    }
+    return '';
   }
 
   String? _detectFirebaseOptions() {
@@ -697,7 +766,14 @@ class AppAnalysis {
   final String packageName;
   final String appClass;
   final String appArgs;
+
+  /// True only when the app's own main.dart constructs the class const.
+  final bool appIsConst;
   final String appStateClass;
+
+  /// lib-relative path of the detected app_state.dart (e.g.
+  /// 'flutter_flow/app_state.dart'), used to generate a correct import.
+  final String? appStateImportPath;
   final String? appStateInitMethod;
   final String? appStateTokenField;
   final String? appStateJwtField;
@@ -720,7 +796,9 @@ class AppAnalysis {
     required this.packageName,
     required this.appClass,
     required this.appArgs,
+    this.appIsConst = false,
     required this.appStateClass,
+    this.appStateImportPath,
     required this.appStateInitMethod,
     required this.appStateTokenField,
     required this.appStateJwtField,
@@ -736,7 +814,8 @@ class AppAnalysis {
     required this.knownRisks,
   });
 
-  /// The full runApp call e.g. MyApp(allowDarkMode: true)
-  String get runAppCall =>
-      appArgs.isNotEmpty ? '$appClass($appArgs)' : 'const $appClass()';
+  /// The full runApp call e.g. MyApp(allowDarkMode: true). `const` only when
+  /// the app's own source constructs it const — emitting it blindly fails to
+  /// compile against non-const constructors.
+  String get runAppCall => '${appIsConst ? 'const ' : ''}$appClass($appArgs)';
 }

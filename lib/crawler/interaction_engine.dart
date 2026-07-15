@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:vm_service/vm_service.dart';
 import '../analysis/performance.dart';
+import 'adb_runner.dart';
 
 enum InteractionType {
   tap,
@@ -262,6 +263,11 @@ class InteractionEngine {
         // Capture widget position from VM service before interacting
         final position = await _getWidgetPosition(interaction);
 
+        // Fingerprint BEFORE the interaction so screenChanged is a real
+        // comparison — it used to return true whenever the after-tree
+        // fetch merely succeeded, which pressed BACK after every tap.
+        final beforeFingerprint = await _screenFingerprint();
+
         await perfCapture.startRecording();
 
         if (interaction.type == InteractionType.scroll) {
@@ -281,7 +287,10 @@ class InteractionEngine {
           '${screenName}_${interaction.widgetType}',
         );
 
-        final screenChanged = await _didScreenChange();
+        final afterFingerprint = await _screenFingerprint();
+        final screenChanged = beforeFingerprint != null &&
+            afterFingerprint != null &&
+            beforeFingerprint != afterFingerprint;
         final outcome = _describeOutcome(interaction, perf, screenChanged);
         print('    ✅ $outcome');
 
@@ -323,20 +332,15 @@ class InteractionEngine {
     final x = position?['x'] ?? (screenSize['width']! / 2).toDouble();
     final y = position?['y'] ?? (screenSize['height']! / 2).toDouble();
 
-    final args = deviceId != null
-        ? [
-            '-s',
-            deviceId!,
-            'shell',
-            'input',
-            'tap',
-            x.toInt().toString(),
-            y.toInt().toString()
-          ]
-        : ['shell', 'input', 'tap', x.toInt().toString(), y.toInt().toString()];
-
-    await Process.run('adb', args).timeout(const Duration(seconds: 5));
+    await _adb(['shell', 'input', 'tap', x.toInt().toString(), y.toInt().toString()]);
   }
+
+  /// All adb access goes through AdbRunner — it resolves the adb binary off
+  /// PATH, never re-interprets args through a shell, and kills hung
+  /// invocations instead of leaking them.
+  Future<ProcessResult> _adb(List<String> args) => deviceId != null
+      ? AdbRunner.run(deviceId!, args)
+      : AdbRunner.runGlobal(args);
 
   /// Real scroll using adb input swipe
   Future<void> _performScroll(Map<String, int> screenSize) async {
@@ -345,59 +349,21 @@ class InteractionEngine {
     final cx = w ~/ 2;
 
     // Swipe down (scroll up content)
-    final downArgs = deviceId != null
-        ? [
-            '-s',
-            deviceId!,
-            'shell',
-            'input',
-            'swipe',
-            cx.toString(),
-            (h * 0.3).toInt().toString(),
-            cx.toString(),
-            (h * 0.7).toInt().toString(),
-            '400'
-          ]
-        : [
-            'shell',
-            'input',
-            'swipe',
-            cx.toString(),
-            (h * 0.3).toInt().toString(),
-            cx.toString(),
-            (h * 0.7).toInt().toString(),
-            '400'
-          ];
-
-    await Process.run('adb', downArgs).timeout(const Duration(seconds: 5));
+    await _adb([
+      'shell', 'input', 'swipe',
+      cx.toString(), (h * 0.3).toInt().toString(),
+      cx.toString(), (h * 0.7).toInt().toString(),
+      '400',
+    ]);
     await Future.delayed(const Duration(milliseconds: 300));
 
     // Swipe back up
-    final upArgs = deviceId != null
-        ? [
-            '-s',
-            deviceId!,
-            'shell',
-            'input',
-            'swipe',
-            cx.toString(),
-            (h * 0.7).toInt().toString(),
-            cx.toString(),
-            (h * 0.3).toInt().toString(),
-            '400'
-          ]
-        : [
-            'shell',
-            'input',
-            'swipe',
-            cx.toString(),
-            (h * 0.7).toInt().toString(),
-            cx.toString(),
-            (h * 0.3).toInt().toString(),
-            '400'
-          ];
-
-    await Process.run('adb', upArgs).timeout(const Duration(seconds: 5));
+    await _adb([
+      'shell', 'input', 'swipe',
+      cx.toString(), (h * 0.7).toInt().toString(),
+      cx.toString(), (h * 0.3).toInt().toString(),
+      '400',
+    ]);
   }
 
   /// Type text using adb input text
@@ -410,35 +376,14 @@ class InteractionEngine {
     await _performTap(position, screenSize);
     await Future.delayed(const Duration(milliseconds: 300));
 
-    final text = (interaction.testData ?? 'test')
-        .replaceAll(' ', '%s')
-        .replaceAll('@', '\\@');
-
-    final args = deviceId != null
-        ? ['-s', deviceId!, 'shell', 'input', 'text', text]
-        : ['shell', 'input', 'text', text];
-
-    await Process.run('adb', args).timeout(const Duration(seconds: 5));
+    final text = escapeAdbShellText(interaction.testData ?? 'test');
+    await _adb(['shell', 'input', 'text', text]);
   }
 
   /// Get screen size via adb wm size
   Future<Map<String, int>> _getScreenSize() async {
-    try {
-      final args = deviceId != null
-          ? ['-s', deviceId!, 'shell', 'wm', 'size']
-          : ['shell', 'wm', 'size'];
-      final result =
-          await Process.run('adb', args).timeout(const Duration(seconds: 5));
-      final output = result.stdout.toString();
-      final match = RegExp(r'(\d+)x(\d+)').firstMatch(output);
-      if (match != null) {
-        return {
-          'width': int.parse(match.group(1)!),
-          'height': int.parse(match.group(2)!),
-        };
-      }
-    } catch (_) {}
-    return {'width': 1080, 'height': 2400}; // default
+    final result = await _adb(['shell', 'wm', 'size']);
+    return parseWmSize(result.stdout.toString());
   }
 
   /// Get widget screen position from VM service
@@ -468,7 +413,11 @@ class InteractionEngine {
     return null; // will use center of screen as fallback
   }
 
-  Future<bool> _didScreenChange() async {
+  /// Structural fingerprint of the current screen (summary-tree node
+  /// descriptions, depth-first). Two equal fingerprints ⇒ same screen.
+  /// Returns null when the tree can't be captured — callers must treat
+  /// that as "unknown", not "changed".
+  Future<String?> _screenFingerprint() async {
     try {
       final response = await vmService.callServiceExtension(
         'ext.flutter.inspector.getRootWidgetTree',
@@ -476,17 +425,29 @@ class InteractionEngine {
         args: {'groupName': 'dangi_check', 'isSummaryTree': 'true'},
       );
       final tree = response.json?['result'] as Map?;
-      return tree != null;
+      if (tree == null) return null;
+      final buffer = StringBuffer();
+      void walk(Map node) {
+        buffer
+          ..write(node['description'] ?? '')
+          ..write('|');
+        final children = node['children'];
+        if (children is List) {
+          for (final child in children) {
+            if (child is Map) walk(child);
+          }
+        }
+      }
+
+      walk(tree);
+      return buffer.toString();
     } catch (_) {
-      return false;
+      return null;
     }
   }
 
   Future<void> _goBack() async {
-    final args = deviceId != null
-        ? ['-s', deviceId!, 'shell', 'input', 'keyevent', '4']
-        : ['shell', 'input', 'keyevent', '4'];
-    await Process.run('adb', args).timeout(const Duration(seconds: 3));
+    await _adb(['shell', 'input', 'keyevent', '4']);
   }
 
   String _describeOutcome(
