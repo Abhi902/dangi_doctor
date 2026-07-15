@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:args/args.dart';
 
 /// Bumped on release alongside pubspec.yaml.
-const String kDangiVersion = '0.2.4';
+const String kDangiVersion = '0.3.0';
 
 /// Parsed command-line configuration for the dangi_doctor CLI.
 class CliConfig {

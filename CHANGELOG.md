@@ -1,3 +1,70 @@
+## 0.3.0
+
+Broad correctness and reliability pass across the whole tool, with the crawler
+changes verified on a live Android device.
+
+### Knowledge pipeline (auto-updated Flutter knowledge)
+- **Fixed the weekly updater.** All 7 flutter.dev sources had moved and were
+  404ing, so the shipped knowledge shrank to placeholders. Source URLs are
+  repaired; on a fetch failure the previous content is kept per section, and
+  the updater now fails (non-zero) instead of committing a degraded file.
+- Generated knowledge files are deterministic (no embedded timestamps), so the
+  weekly job stops producing no-op commits.
+- Community anti-patterns (Layer 2) now live in the repo and are read locally
+  instead of from a URL that never existed.
+- A publish workflow ships the current knowledge with each release.
+
+### Generated tests now compile
+- Emit the `pumpApp` helper the interaction/perf tests call (they previously
+  failed to compile, which also broke running the whole generated directory).
+- Correct `app_state.dart` import path, declaration-based auth-field detection,
+  `$`-interpolated keys skipped/escaped, balanced-paren `runApp` parsing,
+  `const` only when the source is const, project-wide bug tests deduped into
+  one `known_bugs_test.dart`, and a `WidgetsApp` assertion so Cupertino apps
+  pass.
+
+### CLI
+- Real argument parsing (`--help`, `--version`, `--project`, `--vm-url`,
+  `--device`, `--no-ai`); crashes exit non-zero with the real stack trace;
+  never prompts without a terminal (safe in CI); one failed AI diagnosis no
+  longer aborts the run.
+
+### Crawler (verified on-device)
+- **Screen naming**: rank candidates so a real page beats a nested component
+  widget, and the top of a pushed route stack wins — no more reporting a
+  nested `AvatarWidget` (or the route underneath) as the screen. Handles
+  FlutterFlow `*PageWidget` names.
+- **Navigation return**: prefer `push` over `go` (go replaces the stack, so a
+  later BACK exited the app mid-crawl), return home by re-injecting the route,
+  and escape route strings before evaluating them.
+- **Dialog dismissal**: whole-word matching over newly-appeared buttons, so a
+  screen button like "Booking" or "Eyes Only" is no longer mistaken for a
+  leave/confirm button.
+- **Stale coordinates**: re-resolve the next element by label after returning
+  from a child screen.
+- No longer runs `adb kill-server` or `pkill -9` (which tore down unrelated
+  sessions on the machine); adb calls no longer pass through a shell.
+- Warns when the auto-detected device shows no app in the foreground.
+
+### Performance measurements
+- Frames from `Flutter.Frame` events (the DevTools interface) — the old
+  timeline parsing matched nothing on modern engines. Real memory via
+  `getMemoryUsage` (was always 0 MB). Jank budget follows the device refresh
+  rate (8.3 ms at 120 Hz), not a hardcoded 16 ms.
+
+### AI diagnosis
+- Typed errors with real retry/backoff and a Retry-After honor; a request
+  timeout on every provider; guarded response parsing (refusals, safety
+  blocks, and truncation are surfaced, not crashed on).
+- Anthropic prompt caching across screens (~90% cheaper input on multi-screen
+  runs); current model IDs with env overrides; Gemini API key moved out of the
+  URL (it leaked into printed errors); `ANTHROPIC_API_KEY` supported; hidden
+  key entry; crawled content fenced against prompt injection.
+
+### Packaging
+- Removed dead template files that shipped in the package; tightened
+  `.pubignore`; exported the public types the library API references.
+
 ## 0.2.4
 
 - Updated README "What's new" section to reflect v0.2.3 changes.
