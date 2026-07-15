@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:dangi_doctor/ai/knowledge/ai_providers.dart';
+import 'package:dangi_doctor/analysis/performance.dart';
 import 'package:dangi_doctor/ai/knowledge/project_fingerprint.dart';
 import 'package:dangi_doctor/crawler/screen_navigator.dart';
 import 'package:dangi_doctor/generator/app_analyser.dart';
@@ -94,6 +95,18 @@ void main(List<String> argv) async {
   // Detect device ID for ADB taps (Phase 2) — covers all connection paths:
   // launched via option 1, pasted URL via option 2, or auto-connected from cache.
   deviceId ??= await _detectAdbDevice();
+
+  // Jank budget follows the device's real refresh rate — judging a 120Hz
+  // phone against 60Hz's 16ms grades a visibly janky app as "A".
+  if (deviceId != null) {
+    final display = await AdbRunner.run(deviceId, ['shell', 'dumpsys', 'display']);
+    final hz = parseDisplayRefreshRate(display.stdout.toString());
+    if (hz != null) {
+      PerformanceCapture.frameBudgetMs = budgetMsForRefreshRate(hz);
+      print('  🖥️  Display: ${hz.toStringAsFixed(0)}Hz — frame budget '
+          '${PerformanceCapture.frameBudgetMs.toStringAsFixed(1)}ms');
+    }
+  }
 
   if (wsUrl.isEmpty) {
     print('❌ No VM service URL. Exiting.');

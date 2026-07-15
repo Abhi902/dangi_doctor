@@ -1,6 +1,65 @@
+import 'dart:async';
+
 import 'package:vm_service/vm_service.dart';
 
-/// A single captured frame
+/// Parse the display refresh rate out of `adb shell dumpsys display` output.
+/// Returns null when nothing parseable is present.
+double? parseDisplayRefreshRate(String dumpsysOutput) {
+  final match = RegExp(r'renderFrameRate\s+(\d+(?:\.\d+)?)')
+          .firstMatch(dumpsysOutput) ??
+      RegExp(r'fps=(\d+(?:\.\d+)?)').firstMatch(dumpsysOutput);
+  if (match == null) return null;
+  final hz = double.parse(match.group(1)!);
+  return hz > 0 ? hz : null;
+}
+
+/// The per-frame budget for a display refresh rate: 16.7ms at 60Hz,
+/// 11.1ms at 90Hz, 8.3ms at 120Hz. Judging a 120Hz phone against 16ms
+/// grades a visibly janky app as "A".
+double budgetMsForRefreshRate(double hz) => 1000.0 / hz;
+
+/// Convert one `Flutter.Frame` extension-stream event's data (all fields in
+/// microseconds — the same interface DevTools consumes) into a [FrameData].
+FrameData? frameFromFlutterFrameEvent(Map<String, dynamic> data) {
+  final build = data['build'];
+  final raster = data['raster'];
+  if (build is! int || raster is! int) return null;
+  return FrameData(buildMs: build / 1000.0, rasterMs: raster / 1000.0);
+}
+
+/// Fallback timeline parsing: modern engines emit frame phases as COMPLETE
+/// events (`ph: "X"` with a `dur`), not the Begin/End pairs keyed by
+/// frame_number that older code assumed. Build ("Frame") and raster
+/// ("GPURasterizer::Draw"/"Rasterizer::DoDraw") run pipelined on separate
+/// threads, so we pair them by order of appearance.
+List<FrameData> parseTimelineFrames(List<Map<String, dynamic>> events) {
+  final buildsUs = <int>[];
+  final rastersUs = <int>[];
+
+  for (final event in events) {
+    if (event['ph'] != 'X') continue;
+    final dur = event['dur'];
+    if (dur is! int) continue;
+    final name = event['name'] as String? ?? '';
+    if (name == 'Frame') {
+      buildsUs.add(dur);
+    } else if (name == 'GPURasterizer::Draw' || name == 'Rasterizer::DoDraw') {
+      rastersUs.add(dur);
+    }
+  }
+
+  return [
+    for (var i = 0; i < buildsUs.length; i++)
+      FrameData(
+        buildMs: buildsUs[i] / 1000.0,
+        rasterMs: i < rastersUs.length ? rastersUs[i] / 1000.0 : 0,
+      ),
+  ];
+}
+
+/// A single captured frame. Jank is judged against the device's actual
+/// frame budget ([PerformanceCapture.frameBudgetMs]), captured at
+/// construction time.
 class FrameData {
   final double buildMs;
   final double rasterMs;
@@ -9,7 +68,8 @@ class FrameData {
   FrameData({
     required this.buildMs,
     required this.rasterMs,
-  }) : isJanky = buildMs > 16.0 || rasterMs > 16.0;
+  }) : isJanky = buildMs > PerformanceCapture.frameBudgetMs ||
+            rasterMs > PerformanceCapture.frameBudgetMs;
 
   double get totalMs => buildMs + rasterMs;
 }
@@ -42,11 +102,14 @@ class ScreenPerformance {
       ? 0
       : frames.map((f) => f.totalMs).reduce((a, b) => a > b ? a : b);
 
-  /// Performance grade based on jank rate and avg frame time
+  /// Performance grade based on jank rate and avg build time relative to
+  /// the device's frame budget (0.5x/0.75x/1x — at 60Hz that's the classic
+  /// 8/12/16ms thresholds).
   String get grade {
-    if (jankRate == 0 && avgBuildMs < 8) return 'A';
-    if (jankRate < 5 && avgBuildMs < 12) return 'B';
-    if (jankRate < 15 && avgBuildMs < 16) return 'C';
+    final budget = PerformanceCapture.frameBudgetMs;
+    if (jankRate == 0 && avgBuildMs < budget * 0.5) return 'A';
+    if (jankRate < 5 && avgBuildMs < budget * 0.75) return 'B';
+    if (jankRate < 15 && avgBuildMs < budget) return 'C';
     if (jankRate < 30) return 'D';
     return 'F';
   }
@@ -67,6 +130,7 @@ class ScreenPerformance {
   }
 
   void printReport() {
+    final budget = PerformanceCapture.frameBudgetMs.toStringAsFixed(1);
     print('\n┌─────────────────────────────────────────────┐');
     print('│  PERFORMANCE — $screenName');
     print('├─────────────────────────────────────────────┤');
@@ -74,21 +138,23 @@ class ScreenPerformance {
     print('│  Total frames  : $totalFrames');
     print('│  Janky frames  : $jankyFrames (${jankRate.toStringAsFixed(1)}%)');
     print('│  Avg build     : ${avgBuildMs.toStringAsFixed(2)}ms  '
-        '(budget: 16ms)');
+        '(budget: ${budget}ms)');
     print('│  Avg raster    : ${avgRasterMs.toStringAsFixed(2)}ms');
     print('│  Worst frame   : ${worstFrameMs.toStringAsFixed(2)}ms');
-    print('│  Memory        : ${(memoryKb / 1024).toStringAsFixed(1)}MB');
+    if (memoryKb > 0) {
+      print('│  Memory        : ${(memoryKb / 1024).toStringAsFixed(1)}MB');
+    }
     print('└─────────────────────────────────────────────┘');
 
     if (jankyFrames > 0) {
       print(
           '\n  ⚠️  Jank detected — user will feel stuttering on this screen.');
     }
-    if (avgBuildMs > 16) {
+    if (avgBuildMs > PerformanceCapture.frameBudgetMs) {
       print(
-          '  ⚠️  Avg build time exceeds 16ms — check for heavy build() work.');
+          '  ⚠️  Avg build time exceeds the ${budget}ms frame budget — check for heavy build() work.');
     }
-    if (avgRasterMs > 8) {
+    if (avgRasterMs > PerformanceCapture.frameBudgetMs / 2) {
       print(
           '  ⚠️  High raster time — check for expensive painting operations,');
       print('      clipPath, saveLayer, or large image decoding.');
@@ -99,10 +165,22 @@ class ScreenPerformance {
   }
 }
 
-/// Captures performance data from the running Flutter app via VM service
+/// Captures performance data from the running Flutter app via VM service.
+///
+/// Primary source: `Flutter.Frame` events on the VM's Extension stream —
+/// the stable, documented interface DevTools itself uses (`build`, `raster`,
+/// `elapsed` in microseconds per frame). Timeline parsing is kept only as a
+/// fallback for engines that don't emit them.
 class PerformanceCapture {
   final VmService vmService;
   final String isolateId;
+
+  /// Per-frame budget in ms. 16.0 (60Hz) unless the device's real refresh
+  /// rate was detected (see [parseDisplayRefreshRate]) — set once at startup.
+  static double frameBudgetMs = 16.0;
+
+  final List<FrameData> _frameEvents = [];
+  StreamSubscription<Event>? _subscription;
 
   PerformanceCapture({
     required this.vmService,
@@ -111,6 +189,25 @@ class PerformanceCapture {
 
   /// Start recording — call this before interacting with a screen
   Future<void> startRecording() async {
+    _frameEvents.clear();
+
+    // Subscribe to Flutter.Frame extension events. streamListen throws
+    // RPCError 103 when the stream is already subscribed (another capture,
+    // or a previous run) — that's fine, our listener still receives events.
+    try {
+      await vmService.streamListen(EventStreams.kExtension);
+    } on RPCError catch (e) {
+      if (e.code != 103) rethrow;
+    }
+    _subscription ??= vmService.onExtensionEvent.listen((event) {
+      if (event.extensionKind != 'Flutter.Frame') return;
+      final data = event.extensionData?.data;
+      if (data == null) return;
+      final frame = frameFromFlutterFrameEvent(data);
+      if (frame != null) _frameEvents.add(frame);
+    });
+
+    // Timeline recording stays on as the fallback source.
     await vmService.clearVMTimeline();
     await vmService.setVMTimelineFlags(['Dart', 'Embedder', 'GC']);
     print('  ⏱️  Performance recording started...');
@@ -120,124 +217,48 @@ class PerformanceCapture {
   Future<ScreenPerformance> stopAndAnalyse(String screenName) async {
     print('  ⏹️  Stopping recording, analysing frames...');
 
-    // Get timeline events
-    final timeline = await vmService.getVMTimeline();
-    final frames = _extractFrames(timeline);
+    List<FrameData> frames;
+    try {
+      frames = List.of(_frameEvents);
+      if (frames.isEmpty) {
+        // No Flutter.Frame events — fall back to timeline parsing.
+        final timeline = await vmService.getVMTimeline();
+        frames = parseTimelineFrames([
+          for (final e in timeline.traceEvents ?? <TimelineEvent>[])
+            if (e.json != null) e.json!.cast<String, dynamic>(),
+        ]);
+      }
+    } finally {
+      await _stopListening();
+      // Always turn timeline recording back off — leaving it running burns
+      // ring-buffer and CPU on-device for the rest of the session.
+      try {
+        await vmService.setVMTimelineFlags([]);
+      } catch (_) {}
+    }
 
-    // Get memory usage
     final memoryKb = await _getMemoryKb();
 
-    final perf = ScreenPerformance(
+    return ScreenPerformance(
       screenName: screenName,
       frames: frames,
       memoryKb: memoryKb,
     );
-
-    return perf;
   }
 
-  List<FrameData> _extractFrames(Timeline timeline) {
-    final frames = <FrameData>[];
-    final events = timeline.traceEvents ?? [];
-
-    // Flutter emits 'Frame' events with build and raster phases
-    // We look for pairs of begin/end events
-    final buildBegin = <int, int>{}; // frameNumber -> timestamp
-    final buildEnd = <int, int>{};
-    final rasterBegin = <int, int>{};
-    final rasterEnd = <int, int>{};
-
-    for (final event in events) {
-      final args = event.json?['args'] as Map?;
-      final name = event.json?['name'] as String? ?? '';
-      final tsRaw = event.json?['ts'];
-      final ts =
-          tsRaw is int ? tsRaw : int.tryParse(tsRaw?.toString() ?? '0') ?? 0;
-      final ph = event.json?['ph'] as String? ?? ''; // B=begin, E=end
-      final frameNumRaw = args?['frame_number'];
-      final frameNum = frameNumRaw is int
-          ? frameNumRaw
-          : int.tryParse(frameNumRaw?.toString() ?? '') ??
-              events.indexOf(event);
-
-      if (name.contains('Build') || name == 'Frame') {
-        if (ph == 'B') buildBegin[frameNum] = ts;
-        if (ph == 'E') buildEnd[frameNum] = ts;
-      }
-
-      if (name.contains('Rasterize') || name.contains('GPURasterizer')) {
-        if (ph == 'B') rasterBegin[frameNum] = ts;
-        if (ph == 'E') rasterEnd[frameNum] = ts;
-      }
-    }
-
-    // Pair up begin/end events into frame data
-    final frameNums =
-        buildBegin.keys.toSet().intersection(buildEnd.keys.toSet());
-
-    for (final num in frameNums) {
-      final buildUs = (buildEnd[num]! - buildBegin[num]!);
-      final rasterUs =
-          rasterBegin.containsKey(num) && rasterEnd.containsKey(num)
-              ? (rasterEnd[num]! - rasterBegin[num]!)
-              : 0;
-
-      // Convert microseconds to milliseconds
-      final buildMs = buildUs / 1000.0;
-      final rasterMs = rasterUs / 1000.0;
-
-      // Filter out noise — ignore frames under 0.1ms
-      if (buildMs > 0.1) {
-        frames.add(FrameData(buildMs: buildMs, rasterMs: rasterMs.toDouble()));
-      }
-    }
-
-    // If timeline parsing yields nothing (common in some Flutter versions),
-    // fall back to Flutter's built-in frame stats
-    if (frames.isEmpty) {
-      return _fallbackFrameStats(events);
-    }
-
-    return frames;
-  }
-
-  /// Fallback: use Flutter's _flutter.frameRasterized events
-  List<FrameData> _fallbackFrameStats(List<TimelineEvent> events) {
-    final frames = <FrameData>[];
-
-    for (final event in events) {
-      final name = event.json?['name'] as String? ?? '';
-      if (name == 'Frame' || name.contains('flutter.frame')) {
-        final args = event.json?['args'] as Map? ?? {};
-        final buildDuration = args['build_duration_us'] as int?;
-        final rasterDuration = args['raster_duration_us'] as int?;
-
-        if (buildDuration != null) {
-          frames.add(FrameData(
-            buildMs: buildDuration / 1000.0,
-            rasterMs: (rasterDuration ?? 0) / 1000.0,
-          ));
-        }
-      }
-    }
-
-    return frames;
+  Future<void> _stopListening() async {
+    await _subscription?.cancel();
+    _subscription = null;
   }
 
   Future<int> _getMemoryKb() async {
     try {
-      final isolate = await vmService.getIsolate(isolateId);
-      final heapUsage = isolate.pauseEvent?.json?['heapUsage'] as int?;
-      if (heapUsage != null) return (heapUsage / 1024).round();
-
-      // Fallback: use memory usage from isolate
-      final memUsage = await vmService.callServiceExtension(
-        'ext.flutter.profileMemory',
-        isolateId: isolateId,
-        args: {},
-      );
-      final rss = memUsage.json?['rss'] as int? ?? 0;
-      return (rss / 1024).round();
+      // The first-class RPC — pauseEvent.heapUsage only exists on actual
+      // pause events, so the old approach always returned 0 on a running
+      // app, and ext.flutter.profileMemory does not exist.
+      final usage = await vmService.getMemoryUsage(isolateId);
+      final bytes = (usage.heapUsage ?? 0) + (usage.externalUsage ?? 0);
+      return (bytes / 1024).round();
     } catch (_) {
       // Memory capture not critical — return 0 if unavailable
       return 0;
