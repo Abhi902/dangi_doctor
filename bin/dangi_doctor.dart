@@ -96,6 +96,23 @@ void main(List<String> argv) async {
   // launched via option 1, pasted URL via option 2, or auto-connected from cache.
   deviceId ??= await _detectAdbDevice();
 
+  // Cross-check the picked device actually runs the app under test. The VM
+  // service and the ADB device are discovered independently, so with several
+  // devices attached we could tap a *different* phone than the one hosting the
+  // app. If nothing (or only the launcher) is in the foreground, warn — Phase
+  // 2 taps would be landing on the wrong device.
+  if (deviceId != null) {
+    try {
+      final activities =
+          await AdbRunner.run(deviceId, ['shell', 'dumpsys', 'activity', 'activities']);
+      final fg = parseForegroundPackage(activities.stdout.toString());
+      if (fg == null || isLauncherPackage(fg)) {
+        print('  ⚠️  Device $deviceId shows ${fg ?? 'no'} app in the foreground '
+            '— if your Flutter app is on a different device, pass --device <id>.');
+      }
+    } catch (_) {}
+  }
+
   // Jank budget follows the device's real refresh rate — judging a 120Hz
   // phone against 60Hz's 16ms grades a visibly janky app as "A".
   if (deviceId != null) {

@@ -17,6 +17,27 @@ Map<String, int> parseWmSize(String stdout) {
   return {'width': 1080, 'height': 2400};
 }
 
+/// Parse the foreground app package from `adb shell dumpsys activity
+/// activities` (the `mResumedActivity`/`topResumedActivity` line). Returns
+/// null when nothing is parseable. The launcher package resolves normally —
+/// callers compare against it to detect "no app in front".
+String? parseForegroundPackage(String dumpsys) {
+  // e.g. "mResumedActivity: ActivityRecord{... com.dangi.app/.MainActivity ...}"
+  final match = RegExp(
+              r'(?:mResumedActivity|topResumedActivity)\S*.*?\s([a-zA-Z][\w.]+)/')
+          .firstMatch(dumpsys) ??
+      RegExp(r'mCurrentFocus=\S+\s+\S+\s+([a-zA-Z][\w.]+)/').firstMatch(dumpsys);
+  return match?.group(1);
+}
+
+/// True when [package] looks like an Android home-screen launcher rather than
+/// an app under test.
+bool isLauncherPackage(String? package) {
+  if (package == null) return false;
+  final p = package.toLowerCase();
+  return p.contains('launcher') || p.contains('nexuslauncher') || p == 'com.android.settings';
+}
+
 /// Escape text for `adb shell input text`. The argument passes through the
 /// DEVICE-side shell, so every metacharacter must be backslash-escaped and
 /// spaces encoded as %s (the `input` tool's convention).
