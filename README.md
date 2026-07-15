@@ -98,7 +98,7 @@ Or add to your Flutter project's dev dependencies:
 
 ```yaml
 dev_dependencies:
-  dangi_doctor: ^0.1.0
+  dangi_doctor: ^0.2.4
 ```
 
 ---
@@ -209,7 +209,7 @@ dart run dangi_doctor
 
 ## Knowledge auto-update
 
-Layer 1 knowledge is bundled as a Dart constant in the package and updated weekly by a GitHub Actions workflow that pulls from the Flutter GitHub repo. You get the latest Flutter version notes, breaking changes, and bug patterns every time you run `dart pub upgrade dangi_doctor`.
+Layer 1 knowledge is bundled as a Dart constant in the package. A weekly GitHub Actions workflow refreshes it in the repo from the Flutter GitHub repo and flutter.dev docs, and every dangi_doctor release ships the knowledge current at release time — so `dart pub upgrade dangi_doctor` picks up whatever the newest published version bundles. Layer 2 (community anti-patterns) is maintained in [`knowledge/community_patterns.md`](knowledge/community_patterns.md) — PRs welcome.
 
 To update manually (for contributors):
 
@@ -234,7 +234,7 @@ integration_test/
 .dangi_doctor/
   project.json                        ← Layer 3 project fingerprint
   report_<timestamp>.html             ← HTML health report
-  vm_service_url.txt                  ← cached VM URL for reconnection
+  vm_url.txt                          ← cached VM URL for reconnection
 ```
 
 ---

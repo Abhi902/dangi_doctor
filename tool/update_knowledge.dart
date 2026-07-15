@@ -3,375 +3,145 @@
 //
 // The GitHub Actions workflow runs this automatically every week.
 // Run it locally whenever you want to pull the latest Flutter changelog.
+//
+// Behavior on fetch failure: the previous run's content for that section is
+// kept (a transient 404 can never erase good knowledge). The tool exits
+// non-zero if any section ends up with no content at all, so CI goes red
+// instead of committing a degraded file.
+//
+// All pure logic lives in tool/src/knowledge_builder.dart (unit-tested in
+// test/knowledge_builder_test.dart); this file is only I/O.
 
 import 'dart:io';
 import 'package:http/http.dart' as http;
 
+import 'src/knowledge_builder.dart';
+
 const _layer1Out = 'lib/ai/knowledge/layer1_content.dart';
 const _layer2Out = 'lib/ai/knowledge/layer2_content.dart';
 
-// Sources we fetch for Layer 1
+// Sources we fetch for Layer 1. The flutter/website repo hosts flutter.dev
+// content under sites/docs/src/content/ (moved from src/content/ in 2026).
 const _sources = {
   'changelog':
       'https://raw.githubusercontent.com/flutter/flutter/master/CHANGELOG.md',
   'testing':
-      'https://raw.githubusercontent.com/flutter/website/main/src/content/testing/overview.md',
+      'https://raw.githubusercontent.com/flutter/website/main/sites/docs/src/content/testing/overview.md',
   'performance':
-      'https://raw.githubusercontent.com/flutter/website/main/src/content/perf/best-practices.md',
+      'https://raw.githubusercontent.com/flutter/website/main/sites/docs/src/content/perf/best-practices.md',
   'constraints':
-      'https://raw.githubusercontent.com/flutter/website/main/src/content/ui/layout/constraints.md',
+      'https://raw.githubusercontent.com/flutter/website/main/sites/docs/src/content/ui/layout/constraints.md',
   'devtools_perf':
-      'https://raw.githubusercontent.com/flutter/website/main/src/content/tools/devtools/performance.md',
+      'https://raw.githubusercontent.com/flutter/website/main/sites/docs/src/content/tools/devtools/performance.md',
   'devtools_memory':
-      'https://raw.githubusercontent.com/flutter/website/main/src/content/tools/devtools/memory.md',
+      'https://raw.githubusercontent.com/flutter/website/main/sites/docs/src/content/tools/devtools/memory.md',
   'android_deploy':
-      'https://raw.githubusercontent.com/flutter/website/main/src/content/deployment/android.md',
+      'https://raw.githubusercontent.com/flutter/website/main/sites/docs/src/content/deployment/android.md',
   'fetch_data':
-      'https://raw.githubusercontent.com/flutter/website/main/src/content/cookbook/networking/fetch-data.md',
+      'https://raw.githubusercontent.com/flutter/website/main/sites/docs/src/content/cookbook/networking/fetch-data.md',
 };
 
-// Layer 2 — hosted in dangi_doctor repo once public
-const _layer2Url =
-    'https://raw.githubusercontent.com/dangi-doctor/dangi-doctor/main/knowledge/community_patterns.md';
+// Per-section prompt budgets (chars after markdown stripping).
+const _sectionBudgets = {
+  'testing': 3000,
+  'performance': 3000,
+  'constraints': 2000,
+  'devtools_perf': 2000,
+  'devtools_memory': 1500,
+  'android_deploy': 1500,
+  'fetch_data': 1500,
+};
 
-void main() async {
+// Layer 2 lives in this repo — no network fetch, no dead URL.
+const _layer2Source = 'knowledge/community_patterns.md';
+
+Future<void> main() async {
   print('🔄 Updating Dangi Doctor knowledge files...\n');
-  await _updateLayer1();
-  await _updateLayer2();
+  final layer1Missing = await _updateLayer1();
+  final layer2Ok = _updateLayer2();
+
+  if (layer1Missing.isNotEmpty) {
+    stderr.writeln(
+        '\n❌ Sections with no content (fetch failed and no previous data): '
+        '${layer1Missing.join(', ')}');
+    exitCode = 1;
+    return;
+  }
+  if (!layer2Ok) {
+    exitCode = 1;
+    return;
+  }
   print('\n✅ Done. Run `dart analyze lib/ai/knowledge/` to verify.');
 }
 
-// ─── Layer 1 ──────────────────────────────────────────────────────────────
-
-Future<void> _updateLayer1() async {
+Future<List<String>> _updateLayer1() async {
   print('📥 Fetching Flutter official sources...');
 
-  String changelog = '';
-  String testingDocs = '';
-  String perfDocs = '';
+  final fresh = <String, String>{};
+  for (final entry in _sources.entries) {
+    final raw = await _fetch(entry.key, entry.value);
+    fresh[entry.key] = entry.key == 'changelog'
+        ? (raw.isEmpty ? '' : parseChangelog(raw))
+        : (raw.isEmpty ? '' : trimMarkdown(raw, _sectionBudgets[entry.key]!));
+  }
 
-  changelog = await _fetch('changelog', _sources['changelog']!);
-  testingDocs = await _fetch('testing docs', _sources['testing']!);
-  perfDocs = await _fetch('performance docs', _sources['performance']!);
-  final constraintsDocs = await _fetch('constraints', _sources['constraints']!);
-  final devtoolsPerfDocs = await _fetch('devtools performance', _sources['devtools_perf']!);
-  final devtoolsMemoryDocs = await _fetch('devtools memory', _sources['devtools_memory']!);
-  final androidDocs = await _fetch('android deployment', _sources['android_deploy']!);
-  final fetchDataDocs = await _fetch('fetch data cookbook', _sources['fetch_data']!);
+  final outFile = File(_layer1Out);
+  final previous = outFile.existsSync() ? outFile.readAsStringSync() : null;
+  final merged = mergeWithPrevious(fresh: fresh, previousFile: previous);
 
-  final parsedChangelog = _parseChangelog(changelog);
+  for (final key in fresh.keys) {
+    if (fresh[key]!.trim().isEmpty && merged[key]!.trim().isNotEmpty) {
+      print('  ⚠️  $key: fetch failed — kept previous content');
+    }
+  }
 
-  final content = _buildLayer1(
-    changelog: parsedChangelog,
-    testingDocs: _trimMarkdown(testingDocs, 3000),
-    perfDocs: _trimMarkdown(perfDocs, 3000),
-    constraintsDocs: _trimMarkdown(constraintsDocs, 2000),
-    devtoolsPerfDocs: _trimMarkdown(devtoolsPerfDocs, 2000),
-    devtoolsMemoryDocs: _trimMarkdown(devtoolsMemoryDocs, 1500),
-    androidDocs: _trimMarkdown(androidDocs, 1500),
-    fetchDataDocs: _trimMarkdown(fetchDataDocs, 1500),
-  );
-
-  _writeDartConst(
-    file: _layer1Out,
+  outFile.writeAsStringSync(generateDartConst(
     varName: 'kLayer1Content',
     comment:
         '// AUTO-GENERATED by tool/update_knowledge.dart — do not edit manually.\n'
-        '// Sources: Flutter CHANGELOG, flutter.dev/testing, flutter.dev/perf,\n'
-        '//          flutter.dev/ui/layout/constraints, devtools/performance,\n'
-        '//          devtools/memory, deployment/android, cookbook/networking\n'
-        '// Updated: ${DateTime.now().toUtc().toIso8601String()}',
-    content: content,
-  );
+        '// Sources: Flutter CHANGELOG + flutter.dev docs (see tool/update_knowledge.dart).\n'
+        '// Update dates are tracked by git history, not embedded here, so the\n'
+        '// generated file is deterministic.',
+    content: buildLayer1(merged),
+  ));
   print('  ✅ Layer 1 updated → $_layer1Out');
+
+  return missingSections(merged);
 }
 
-String _buildLayer1({
-  required String changelog,
-  required String testingDocs,
-  required String perfDocs,
-  required String constraintsDocs,
-  required String devtoolsPerfDocs,
-  required String devtoolsMemoryDocs,
-  required String androidDocs,
-  required String fetchDataDocs,
-}) {
-  return '''
-=== LAYER 1: FLUTTER OFFICIAL KNOWLEDGE ===
-You are Dangi Doctor — an expert Flutter app physician diagnosing real production apps.
-
-━━━ FLUTTER FUNDAMENTALS ━━━
-
-WIDGET LIFECYCLE:
-- StatelessWidget: build() called once on creation and when parent rebuilds
-- StatefulWidget lifecycle: createState → initState → didChangeDependencies →
-  build → didUpdateWidget → deactivate → dispose
-- didChangeDependencies() is called MULTIPLE TIMES — never assign late fields here
-  without a boolean guard or you get LateInitializationError
-- dispose() MUST cancel: StreamSubscription, AnimationController,
-  TextEditingController, FocusNode, ScrollController
-- Never call setState() after dispose() — check `if (mounted)` in async callbacks
-
-THREE TREES:
-- Widget tree: immutable config, cheap to create
-- Element tree: mutable lifecycle state, persists across rebuilds
-- RenderObject tree: actual painting, expensive to create
-- Keys help Flutter match elements across rebuilds — use ValueKey for lists,
-  GlobalKey sparingly (expensive — causes full subtree rebuilds)
-
-CONST & REBUILD OPTIMIZATION:
-- const constructors skip build() entirely on rebuild — use aggressively
-- RepaintBoundary wraps independently animating widgets to isolate rasterization
-- Consumer/Selector from provider limit rebuild scope to the exact widget that needs it
-
-━━━ STATE MANAGEMENT — ERRORS BY FRAMEWORK ━━━
-
-PROVIDER (most common in FlutterFlow/generated apps):
-- "Could not find the correct Provider" → context does not have access to the
-  provider. Provider must be above the widget in the tree.
-- Calling context.watch() inside initState, didChangeDependencies, or a
-  callback → runtime error. Only call watch() inside build().
-- context.read() in build() → misses updates. Use context.watch() in build.
-- Creating ChangeNotifier inside build() → new instance on every rebuild,
-  all listeners dropped. Create in initState or above the tree.
-- Calling notifyListeners() inside build() or inside another notifyListeners() →
-  "setState called during build" error.
-- Not calling super.dispose() in ChangeNotifier subclass → listeners never freed.
-
-BLOC/FLUTTER_BLOC:
-- Emitting state after the bloc is closed → "Cannot emit new states after calling close"
-  Add `if (!isClosed)` guard before any async emit.
-- BlocBuilder without buildWhen → rebuilds on every state change including
-  unrelated sub-states. Always specify buildWhen for performance.
-- Using context.read<MyBloc>() inside build() to get bloc events → anti-pattern.
-  Use BlocListener for side effects, BlocBuilder for UI.
-- Creating a Bloc inline in BlocProvider without lazy:false → bloc created before
-  it's needed, causing stale state bugs on navigation.
-- Forgetting to close Bloc in dispose() if created manually → memory leak.
-
-RIVERPOD:
-- Reading a provider outside of widget build or ref.watch → "No ProviderScope found"
-  or stale data. Always use ref.watch (rebuild) or ref.read (one-time) appropriately.
-- Using ref.watch inside a callback (onPressed, onTap) → runtime error.
-  Use ref.read inside callbacks.
-- StateNotifier: calling state = newValue inside build() → rebuild loop.
-- AsyncNotifier: forgetting to handle error state → unhandled exception in UI.
-- Not using ref.listen for side effects (navigation, dialogs) → they trigger on
-  every rebuild, not just state changes.
-
-GETX:
-- Calling Get.find<MyController>() before it's registered → "MyController not found"
-  Register with Get.put() or Get.lazyPut() before use.
-- Using Obx() without a .obs variable inside → widget never rebuilds.
-  Every variable accessed inside Obx must be .obs.
-- GetX controller lifecycle: onInit → onReady (after first frame) → onClose.
-  Heavy work should be in onInit, not in the constructor.
-- Not calling Get.delete<MyController>() when done → controller lives forever.
-
-━━━ COMMON FLUTTER ERRORS BY CATEGORY ━━━
-
-RENDERING:
-- "RenderFlex overflowed by X pixels" → Column/Row child too large for available
-  space. Use Expanded, Flexible, or wrap in SingleChildScrollView.
-- "A RenderFlex overflowed" during keyboard open → Scaffold body not wrapped in
-  SingleChildScrollView or resizeToAvoidBottomInset not set.
-- "Incorrect use of ParentDataWidget" → Expanded/Flexible used outside Column/Row/Flex.
-- "RenderBox was not laid out" → widget tree has a cycle or unbounded constraint.
-  Use LayoutBuilder to inspect constraints.
-
-NAVIGATION:
-- "Navigator operation requested with a context that does not include a Navigator"
-  → context is above MaterialApp. Use a GlobalKey<NavigatorState> or
-  Navigator.of(context, rootNavigator: true).
-- GoRouter "No GoRouter found in context" → GoRouter not provided above the widget.
-  Add router: goRouter to MaterialApp.router().
-- WillPopScope is deprecated in Flutter 3.12+ → use PopScope with canPop/onPopInvoked.
-- pushReplacement vs pushAndRemoveUntil: use pushAndRemoveUntil for logout flows
-  to prevent back-navigation to authenticated screens.
-
-ASYNC & FUTURES:
-- "setState() called after dispose()" → async gap completed after widget removed.
-  Guard every setState with `if (mounted)`.
-- "Bad state: Stream has already been listened to" → StreamSubscription not
-  cancelled in dispose(), stream re-listened on rebuild.
-- FutureBuilder with a future created inline in build() → new Future on every
-  rebuild, infinite loading spinner. Cache the Future in initState.
-- await in build() → silently ignored, returns stale data. Use FutureBuilder.
-
-FIREBASE:
-- "Failed to initialize Firebase" → Firebase.initializeApp() not called before
-  runApp(), or DefaultFirebaseOptions not generated (run flutterfire configure).
-- Firestore listener not cancelled → StreamSubscription from snapshots() must
-  be cancelled in dispose() or it leaks across hot restarts.
-- Firebase Auth persistence: on web, default is LOCAL. On mobile, always LOCAL.
-  If user keeps getting logged out, check FirebaseAuth.instance.setPersistence().
-- "permission-denied" on Firestore → security rules not configured for the
-  authenticated user's document path.
-
-PERFORMANCE RULES (from flutter.dev/perf):
-- 16ms frame budget for 60fps, 8ms for 120fps devices
-- Jank = frame takes > 16ms to build OR raster
-- Never: async calls, setState, heavy computation, or network requests in build()
-- ListView.builder mandatory for lists > 20 items (ListView renders all children)
-- Image.network: always set width/height/cacheWidth to avoid layout thrashing
-- Avoid Opacity widget for animations — use AnimatedOpacity or FadeTransition
-- Use const constructors everywhere possible — Flutter skips rebuild entirely
-- RepaintBoundary around animations, maps, or any expensive independently-animated widget
-
-━━━ FLUTTER VERSION HISTORY (last $_versionsToKeep major versions) ━━━
-
-$changelog
-
-━━━ FLUTTER TESTING OFFICIAL DOCS ━━━
-
-$testingDocs
-
-━━━ FLUTTER PERFORMANCE OFFICIAL DOCS ━━━
-
-$perfDocs
-
-━━━ FLUTTER LAYOUT CONSTRAINTS ━━━
-
-$constraintsDocs
-
-━━━ DEVTOOLS — PERFORMANCE PROFILING ━━━
-
-$devtoolsPerfDocs
-
-━━━ DEVTOOLS — MEMORY & LEAK DETECTION ━━━
-
-$devtoolsMemoryDocs
-
-━━━ ANDROID DEPLOYMENT ━━━
-
-$androidDocs
-
-━━━ NETWORKING & ASYNC COOKBOOK ━━━
-
-$fetchDataDocs
-''';
-}
-
-// ─── Layer 2 ──────────────────────────────────────────────────────────────
-
-Future<void> _updateLayer2() async {
-  print('📥 Fetching community patterns...');
-  final content = await _fetch('community patterns', _layer2Url);
-  if (content.isEmpty) {
-    print(
-        '  ⚠️  Skipped — edit $_layer2Out manually until the repo is public.');
-    return;
+bool _updateLayer2() {
+  print('📥 Reading community patterns from $_layer2Source...');
+  final source = File(_layer2Source);
+  if (!source.existsSync()) {
+    stderr.writeln('  ❌ $_layer2Source not found');
+    return false;
   }
-  _writeDartConst(
-    file: _layer2Out,
+  final content = source.readAsStringSync().trim();
+  if (content.isEmpty) {
+    stderr.writeln('  ❌ $_layer2Source is empty');
+    return false;
+  }
+  File(_layer2Out).writeAsStringSync(generateDartConst(
     varName: 'kLayer2Content',
     comment:
         '// AUTO-GENERATED by tool/update_knowledge.dart — do not edit manually.\n'
-        '// Source: $_layer2Url\n'
-        '// Updated: ${DateTime.now().toUtc().toIso8601String()}',
+        '// Source: knowledge/community_patterns.md (this repo). Edit that file\n'
+        '// and re-run the tool (or let the weekly workflow regenerate this).',
     content: content,
-  );
+  ));
   print('  ✅ Layer 2 updated → $_layer2Out');
+  return true;
 }
-
-// ─── Helpers ──────────────────────────────────────────────────────────────
 
 Future<String> _fetch(String name, String url) async {
   try {
     final res =
         await http.get(Uri.parse(url)).timeout(const Duration(seconds: 15));
     if (res.statusCode == 200) return res.body;
-    print('  ⚠️  $name: HTTP ${res.statusCode}');
+    stderr.writeln('  ⚠️  $name: HTTP ${res.statusCode}');
     return '';
   } catch (e) {
-    print('  ⚠️  $name: $e');
+    stderr.writeln('  ⚠️  $name: $e');
     return '';
   }
-}
-
-/// Extract the 5 most recent major Flutter version sections from CHANGELOG.md.
-/// Each section is capped at [_charsPerVersion] chars so total stays manageable.
-/// Handles header formats: "## Flutter 3.41 Changes", "## 3.x.y", "## v3.x.y"
-const _versionsToKeep = 5;
-const _charsPerVersion = 1500;
-
-String _parseChangelog(String raw) {
-  if (raw.isEmpty) return '(changelog unavailable)';
-
-  final lines = raw.split('\n');
-
-  // Collect raw text for each major version block
-  final versions = <String, StringBuffer>{}; // version label → content
-  final versionOrder = <String>[]; // preserve order
-  String? currentVersion;
-
-  for (final line in lines) {
-    if (RegExp(r'^##\s+(Flutter\s+)?(v)?\d+\.\d+').hasMatch(line)) {
-      // Extract a clean version label e.g. "Flutter 3.41"
-      final match =
-          RegExp(r'(Flutter\s+)?(v)?(\d+\.\d+[\.\d]*)').firstMatch(line);
-      final label = match != null ? 'Flutter ${match.group(3)}' : line.trim();
-
-      if (versionOrder.length >= _versionsToKeep) break;
-
-      currentVersion = label;
-      if (!versions.containsKey(label)) {
-        versions[label] = StringBuffer();
-        versionOrder.add(label);
-      }
-    }
-    if (currentVersion != null) {
-      versions[currentVersion]!.writeln(line);
-    }
-  }
-
-  if (versionOrder.isEmpty) return '(no version sections found in changelog)';
-
-  final buffer = StringBuffer();
-  for (final version in versionOrder) {
-    final content = versions[version]!.toString();
-    final capped = content.length > _charsPerVersion
-        ? '${content.substring(0, _charsPerVersion)}\n  ...(more fixes not shown)'
-        : content;
-
-    buffer.writeln('─── $version ───────────────────────────');
-    buffer.writeln(capped.trim());
-    buffer.writeln();
-  }
-
-  return buffer.toString();
-}
-
-/// Strip markdown syntax and cap length for prompt use.
-String _trimMarkdown(String raw, int maxChars) {
-  if (raw.isEmpty) return '(unavailable)';
-  // Remove HTML tags, keep text content
-  var text = raw
-      .replaceAll(RegExp(r'<[^>]+>'), '')
-      .replaceAll(RegExp(r'```[^`]*```', dotAll: true), '')
-      .replaceAll(RegExp(r'\{%[^%]*%\}'), '')
-      .replaceAll(RegExp(r'\[\[.*?\]\]'), '')
-      .trim();
-  return text.length > maxChars
-      ? '${text.substring(0, maxChars)}\n...(truncated)'
-      : text;
-}
-
-void _writeDartConst({
-  required String file,
-  required String varName,
-  required String comment,
-  required String content,
-}) {
-  // Escape sequences that would break a triple-quoted Dart string
-  final escaped = content
-      .replaceAll(r'\', r'\\')
-      .replaceAll(r'$', r'\$')
-      .replaceAll("'''", r"\'\'\'");
-
-  File(file).writeAsStringSync('''$comment
-
-const String $varName = \'\'\'
-$escaped\'\'\';
-''');
 }

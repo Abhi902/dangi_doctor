@@ -27,6 +27,12 @@ jobs:
       - name: Get dependencies
         run: dart pub get
 
+      - name: Run tests
+        run: dart test
+
+      # Exits non-zero if any knowledge section ends up with no content
+      # (fetch failed with no previous data), failing the job instead of
+      # committing a degraded file.
       - name: Run knowledge updater
         run: dart run tool/update_knowledge.dart
 
