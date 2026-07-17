@@ -69,6 +69,110 @@ bool isLeaveDialogLabel(String desc) {
   return words.any(_kLeaveKeywords.contains);
 }
 
+/// A clickable element from a uiautomator dump: exact pixel centre + label.
+typedef Tappable = ({int cx, int cy, String desc});
+
+/// Decode the XML character entities `uiautomator dump` puts in attribute
+/// values, so labels feed the dangerous-label / back-button / dialog matchers
+/// as the user actually sees them ("Save & Continue", not
+/// "Save &amp; Continue"). `&amp;` is decoded LAST so double-encoded input
+/// like `&amp;lt;` yields the literal text `&lt;`, not `<`.
+String decodeXmlEntities(String s) => s
+    .replaceAll('&quot;', '"')
+    .replaceAll('&apos;', "'")
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&#10;', '\n')
+    .replaceAll('&amp;', '&');
+
+/// Parse `uiautomator dump` XML into the clickable elements on screen:
+/// centre coordinates and best label (content-desc, else text, else a
+/// `tap(cx,cy)` placeholder), entities decoded, sorted top-to-bottom then
+/// left-to-right, elements smaller than 20x20px and duplicate centres
+/// dropped, repeated data-driven list rows reduced to their first item via
+/// [deduplicateListItems].
+///
+/// Pure function (no adb) — extracted from `ScreenNavigator._getAllTappables`
+/// so recorded dump fixtures can exercise it directly.
+List<Tappable> parseUiautomatorTappables(String xml) {
+  final trimmed = xml.trim();
+  if (trimmed.isEmpty || !trimmed.startsWith('<')) return [];
+
+  final boundsRe = RegExp(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"');
+  final descRe = RegExp(r'content-desc="([^"]*)"');
+  final textRe = RegExp(r'\btext="([^"]*)"');
+  final tagRe = RegExp(r'<node\b[^>]+>');
+
+  final seen = <String>{};
+  final result = <Tappable>[];
+  for (final m in tagRe.allMatches(trimmed)) {
+    final tag = m.group(0)!;
+    if (!tag.contains('clickable="true"')) continue;
+    final bm = boundsRe.firstMatch(tag);
+    if (bm == null) continue;
+    final x1 = int.parse(bm.group(1)!);
+    final y1 = int.parse(bm.group(2)!);
+    final x2 = int.parse(bm.group(3)!);
+    final y2 = int.parse(bm.group(4)!);
+    if ((x2 - x1) < 20 || (y2 - y1) < 20) continue;
+    final cx = (x1 + x2) ~/ 2;
+    final cy = (y1 + y2) ~/ 2;
+    if (!seen.add('$cx,$cy')) continue;
+    final rawDesc =
+        decodeXmlEntities(descRe.firstMatch(tag)?.group(1) ?? '').trim();
+    final rawText =
+        decodeXmlEntities(textRe.firstMatch(tag)?.group(1) ?? '').trim();
+    final desc = rawDesc.isNotEmpty
+        ? rawDesc
+        : rawText.isNotEmpty
+            ? rawText
+            : 'tap($cx,$cy)';
+    result.add((cx: cx, cy: cy, desc: desc));
+  }
+  result.sort(
+      (a, b) => a.cy != b.cy ? a.cy.compareTo(b.cy) : a.cx.compareTo(b.cx));
+  return deduplicateListItems(result);
+}
+
+/// Detects data-driven list items (e.g. ListView.builder rows) and removes
+/// all but the first from each group, so we explore one representative item
+/// rather than wasting taps on every row of the same list.
+///
+/// Detection: elements whose label contains a structural newline (`&#10;`
+/// already decoded to `\n` by [decodeXmlEntities]) with enough text to be
+/// multi-line data. Those sharing the same X-bucket form a group; all but
+/// the first are skipped. The first item is still tapped and explored fully.
+List<Tappable> deduplicateListItems(List<Tappable> items) {
+  if (items.length < 3) return items;
+
+  final candidates =
+      items.where((e) => e.desc.contains('\n') && e.desc.length > 15).toList();
+  if (candidates.length < 2) return items;
+
+  // Group by X-bucket (same column → same list).
+  const xBucketSize = 120;
+  final groups = <int, List<Tappable>>{};
+  for (final item in candidates) {
+    final bucket = (item.cx ~/ xBucketSize) * xBucketSize;
+    (groups[bucket] ??= []).add(item);
+  }
+
+  final skipCoords = <String>{};
+  for (final group in groups.values) {
+    if (group.length < 2) continue;
+    group.sort((a, b) => a.cy.compareTo(b.cy));
+    for (var i = 1; i < group.length; i++) {
+      skipCoords.add('${group[i].cx},${group[i].cy}');
+    }
+    final firstName = group.first.desc.split('\n').first.trim();
+    print(
+        '  📋 ListView group (${group.length} items) — exploring only first: "$firstName"');
+  }
+
+  if (skipCoords.isEmpty) return items;
+  return items.where((e) => !skipCoords.contains('${e.cx},${e.cy}')).toList();
+}
+
 /// Widget types that end in Page/Screen/Widget but are structural, not
 /// content screens.
 const kScreenSkipTypes = {
@@ -591,41 +695,7 @@ class ScreenNavigator {
           deviceId!, ['shell', 'cat', '/sdcard/dangi_ui.xml']);
       await AdbRunner.run(
           deviceId!, ['shell', 'rm', '-f', '/sdcard/dangi_ui.xml']);
-      final xml = catResult.stdout.toString().trim();
-      if (xml.isEmpty || !xml.startsWith('<')) return [];
-
-      final boundsRe = RegExp(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"');
-      final descRe = RegExp(r'content-desc="([^"]*)"');
-      final textRe = RegExp(r'\btext="([^"]*)"');
-      final tagRe = RegExp(r'<node\b[^>]+>');
-
-      final seen = <String>{};
-      final result = <({int cx, int cy, String desc})>[];
-      for (final m in tagRe.allMatches(xml)) {
-        final tag = m.group(0)!;
-        if (!tag.contains('clickable="true"')) continue;
-        final bm = boundsRe.firstMatch(tag);
-        if (bm == null) continue;
-        final x1 = int.parse(bm.group(1)!);
-        final y1 = int.parse(bm.group(2)!);
-        final x2 = int.parse(bm.group(3)!);
-        final y2 = int.parse(bm.group(4)!);
-        if ((x2 - x1) < 20 || (y2 - y1) < 20) continue;
-        final cx = (x1 + x2) ~/ 2;
-        final cy = (y1 + y2) ~/ 2;
-        if (!seen.add('$cx,$cy')) continue;
-        final rawDesc = descRe.firstMatch(tag)?.group(1)?.trim() ?? '';
-        final rawText = textRe.firstMatch(tag)?.group(1)?.trim() ?? '';
-        final desc = rawDesc.isNotEmpty
-            ? rawDesc
-            : rawText.isNotEmpty
-                ? rawText
-                : 'tap($cx,$cy)';
-        result.add((cx: cx, cy: cy, desc: desc));
-      }
-      result.sort(
-          (a, b) => a.cy != b.cy ? a.cy.compareTo(b.cy) : a.cx.compareTo(b.cx));
-      return _deduplicateListItems(result);
+      return parseUiautomatorTappables(catResult.stdout.toString());
     } catch (_) {
       return [];
     }
@@ -664,51 +734,6 @@ class ScreenNavigator {
       final tree = await _captureTree();
       if (_detectScreenName(tree) != screenNameBefore) return;
     }
-  }
-
-  /// Detects data-driven list items (e.g. ListView.builder rows) and removes
-  /// all but the first from each group, so we explore one representative item
-  /// rather than wasting taps on every row of the same list.
-  ///
-  /// Detection: elements whose label contains a structural newline (`&#10;` or
-  /// `\n` with enough text to be multi-line data) are candidates. Those sharing
-  /// the same X-bucket (within ±60px) form a group; all but the first are
-  /// skipped.  The first item is still tapped and explored fully.
-  List<({int cx, int cy, String desc})> _deduplicateListItems(
-      List<({int cx, int cy, String desc})> items) {
-    if (items.length < 3) return items;
-
-    // Collect list-item candidates: multi-line data-driven labels.
-    final candidates = items.where((e) {
-      final isMultiLine = e.desc.contains('&#10;') || e.desc.contains('\n');
-      return isMultiLine && e.desc.length > 15;
-    }).toList();
-
-    if (candidates.length < 2) return items;
-
-    // Group by X-bucket (same column → same list).
-    const xBucketSize = 120;
-    final groups = <int, List<({int cx, int cy, String desc})>>{};
-    for (final item in candidates) {
-      final bucket = (item.cx ~/ xBucketSize) * xBucketSize;
-      (groups[bucket] ??= []).add(item);
-    }
-
-    final skipCoords = <String>{};
-    for (final group in groups.values) {
-      if (group.length < 2) continue;
-      group.sort((a, b) => a.cy.compareTo(b.cy));
-      // Skip everything after the first item.
-      for (var i = 1; i < group.length; i++) {
-        skipCoords.add('${group[i].cx},${group[i].cy}');
-      }
-      final firstName = group.first.desc.split('&#10;').first.trim();
-      print(
-          '  📋 ListView group (${group.length} items) — exploring only first: "$firstName"');
-    }
-
-    if (skipCoords.isEmpty) return items;
-    return items.where((e) => !skipCoords.contains('${e.cx},${e.cy}')).toList();
   }
 
   static const _dangerousLabels = {
