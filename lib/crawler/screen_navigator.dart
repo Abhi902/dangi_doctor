@@ -301,12 +301,15 @@ class ScreenNavigator {
             PerformanceCapture(vmService: vmService, isolateId: isolateId);
         await routeCapture.startRecording();
       } catch (_) {
+        // startRecording may fail partway — make sure nothing stays on.
+        await routeCapture?.abandon();
         routeCapture = null;
       }
 
       final navigated = await _evaluator.navigateTo(route);
       if (!navigated) {
         print('     ↳ No router strategy accepted this route — skipping');
+        await routeCapture?.abandon();
         continue;
       }
 
@@ -332,6 +335,7 @@ class ScreenNavigator {
             navigatedVia: 'route:$route', startedCapture: routeCapture);
       } else {
         print('     ↳ No new screen (still $effectiveName)');
+        await routeCapture?.abandon();
       }
 
       // Return home before the next route. We navigate with push() now, so a
@@ -502,6 +506,8 @@ class ScreenNavigator {
             PerformanceCapture(vmService: vmService, isolateId: isolateId);
         await tapCapture.startRecording();
       } catch (_) {
+        // startRecording may fail partway — make sure nothing stays on.
+        await tapCapture?.abandon();
         tapCapture = null;
       }
 
@@ -531,6 +537,10 @@ class ScreenNavigator {
               depth: depth + 1,
               navDepth: navDepth + 1,
               homeScreenName: homeScreenName);
+        } else {
+          // Navigated to a screen we already analysed — end the capture
+          // without producing a result.
+          await tapCapture?.abandon();
         }
 
         // Return to [screenName].
@@ -546,8 +556,11 @@ class ScreenNavigator {
         // We navigated away and came back — the remaining coordinates in
         // `tappables` may now be stale; re-resolve the next one by label.
         coordsMayBeStale = true;
+      } else {
+        // No navigation → nothing to analyse; end the capture, then continue
+        // to the next element without pressing back.
+        await tapCapture?.abandon();
       }
-      // No navigation → continue to next element without pressing back.
     }
   }
 
