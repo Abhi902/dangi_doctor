@@ -481,9 +481,6 @@ class ScreenNavigator {
       if (_visitedScreenNames.contains(tapKey)) continue;
       _visitedScreenNames.add(tapKey);
 
-      // Track for persistence.
-      (_exploredTappables[screenName] ??= {}).add('$cx,$cy');
-
       if (_isDangerousLabel(desc)) {
         print('  ⚠️  Skipping "$desc" — potentially destructive');
         continue;
@@ -512,7 +509,19 @@ class ScreenNavigator {
       }
 
       print('  👆 Tapping "$desc" at ($cx, $cy)...');
-      await AdbRunner.tap(deviceId!, cx, cy);
+      final tapped = await AdbRunner.tap(deviceId!, cx, cy);
+      if (!tapped) {
+        print('  ⚠️  adb tap failed for "$desc" — will retry on a later visit');
+        // Un-claim the session key so a later visit to this screen retries
+        // the element instead of permanently blacklisting it.
+        _visitedScreenNames.remove(tapKey);
+        await tapCapture?.abandon();
+        continue;
+      }
+      // Only a tap that actually landed counts as explored — recording any
+      // earlier would let one adb hiccup permanently blacklist an element
+      // that was never exercised.
+      (_exploredTappables[screenName] ??= {}).add('$cx,$cy');
       await _waitForNavigation(nameBefore);
 
       final newTree = await _captureTree();
