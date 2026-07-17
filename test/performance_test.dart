@@ -116,18 +116,16 @@ DisplayDeviceInfo{..., 1080 x 2400, modeId 2, renderFrameRate 120.000000,
       expect(perf.totalFrames, 0);
     });
 
-    test('abandon discards frames — a later capture starts clean', () async {
+    test('abandon clears buffered frames so nothing is analysed', () async {
       await capture.startRecording();
       fake.emitFrame(buildUs: 5000, rasterUs: 3000);
       await _pump();
       await capture.abandon();
-
-      await capture.startRecording();
-      fake.emitFrame(buildUs: 20000, rasterUs: 1000);
-      await _pump();
+      // Directly call stopAndAnalyse without a second startRecording.
+      // If abandon() failed to clear the buffer, the emitted frame would
+      // survive and totalFrames would be 1. With the clear, we expect 0.
       final perf = await capture.stopAndAnalyse('TestScreen');
-      expect(perf.totalFrames, 1);
-      expect(perf.frames.single.buildMs, closeTo(20.0, 0.01));
+      expect(perf.totalFrames, 0);
     });
 
     test('abandon is safe twice and without startRecording', () async {
