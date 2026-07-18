@@ -51,6 +51,14 @@ void main(List<String> argv) async {
   final projectPath = _resolveProjectPath(config);
   print('📁 Project: $projectPath\n');
 
+  if (config.rescan) {
+    final fingerprint = File('$projectPath/.dangi_doctor/project.json');
+    if (fingerprint.existsSync()) {
+      fingerprint.deleteSync();
+      print('🔄 --rescan: cached project fingerprint deleted — rescanning.\n');
+    }
+  }
+
   // Step 1 — pick AI provider (unless --no-ai)
   final provider = config.noAi ? null : await AiProviderDetector.detect();
   if (provider == null) print('⚡ Crawler-only mode — no AI diagnosis.\n');
@@ -128,8 +136,9 @@ void main(List<String> argv) async {
   }
 
   if (wsUrl.isEmpty) {
-    print('❌ No VM service URL. Exiting.');
-    exit(1);
+    stderr.writeln('❌ No VM service URL. Exiting.');
+    exitCode = 64; // EX_USAGE — consistent with the non-terminal path above
+    return;
   }
 
   final crawler = ScreenCrawler(projectPath: projectPath, wsUrl: wsUrl);
