@@ -14,6 +14,14 @@ class TestGenerator {
   /// Exposes the cached AppAnalysis (available after the first generateAndSave call).
   AppAnalysis? get cachedAnalysis => _analysis;
 
+  /// Escapes [s] for safe embedding inside a single-quoted Dart string
+  /// literal in generated code.
+  static String dartEsc(String s) => s
+      .replaceAll('\\', '\\\\')
+      .replaceAll("'", "\\'")
+      .replaceAll('\$', '\\\$')
+      .replaceAll('\n', '\\n');
+
   Future<List<String>> generateAndSave({
     required String screenName,
     required Map<String, dynamic> widgetTree,
@@ -216,6 +224,7 @@ Future<void> pumpApp(WidgetTester tester, Widget app) async {
     Map<String, dynamic> sourceInfo,
     AppAnalysis a,
   ) {
+    final nameEsc = dartEsc(screenName);
     final keys = (sourceInfo['keys'] as List<String>)
         .where((k) => !RegExp(r'^[a-f0-9]{20,}$').hasMatch(k))
         .where((k) => k.length < 50)
@@ -241,7 +250,7 @@ import 'test_helper.dart';
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  group('$screenName — smoke tests', () {
+  group('$nameEsc — smoke tests', () {
     testWidgets('app launches without crashing', (tester) async {
       await setupTest();
       final errors = await pumpAppCollecting(tester, ${a.runAppCall});
@@ -310,14 +319,8 @@ $riskTests
         '    // ─── Bug-specific tests detected by Dangi Doctor static analysis ───');
 
     for (final risk in risks) {
-      String esc(String s) => s
-          .replaceAll('\\', '\\\\')
-          .replaceAll("'", "\\'")
-          .replaceAll('\$', '\\\$')
-          .replaceAll('\n', '\\n');
-
-      final descEsc = esc(risk.description);
-      final fixEsc = esc(risk.suggestedFix);
+      final descEsc = dartEsc(risk.description);
+      final fixEsc = dartEsc(risk.suggestedFix);
       final fileLine = '${risk.file}:${risk.line}';
 
       switch (risk.type) {
@@ -449,6 +452,7 @@ $riskTests
     List<InteractionResult> results,
     AppAnalysis a,
   ) {
+    final nameEsc = dartEsc(screenName);
     final tappableLines =
         sourceInfo['tappable_lines'] as List<Map<String, dynamic>>;
     final keys = (sourceInfo['keys'] as List<String>)
@@ -468,7 +472,9 @@ $riskTests
         await tester.ensureVisible(widgets.first);
         await tester.pump();
         await tester.tap(widgets.first);
-        for (var i = 0; i < 4; i++) await tester.pump(const Duration(milliseconds: 500));
+        for (var i = 0; i < 4; i++) {
+          await tester.pump(const Duration(milliseconds: 500));
+        }
         expect(tester.takeException(), isNull);
       }
     });''';
@@ -483,7 +489,9 @@ $riskTests
         await tester.ensureVisible(widget);
         await tester.pump();
         await tester.tap(widget);
-        for (var i = 0; i < 4; i++) await tester.pump(const Duration(milliseconds: 500));
+        for (var i = 0; i < 4; i++) {
+          await tester.pump(const Duration(milliseconds: 500));
+        }
         expect(tester.takeException(), isNull);
       }
     });''').join('\n');
@@ -501,7 +509,7 @@ import 'test_helper.dart';
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  group('$screenName — interaction tests', () {
+  group('$nameEsc — interaction tests', () {
 $sourceTests
 $keyTests
   });
@@ -515,6 +523,7 @@ $keyTests
     AppAnalysis a,
   ) {
     final snake = _toSnakeCase(screenName);
+    final nameEsc = dartEsc(screenName);
     final budget = PerformanceCapture.frameBudgetMs.toStringAsFixed(1);
     final hasData = crawlPerf != null && crawlPerf.totalFrames > 0;
 
@@ -531,11 +540,11 @@ import 'package:integration_test/integration_test.dart';
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  group('$screenName — performance tests', () {
+  group('$nameEsc — performance tests', () {
     test(
       'renders within frame budget — SKIPPED (no crawl data)',
       () {},
-      skip: 'No performance data was collected for $screenName during the '
+      skip: 'No performance data was collected for $nameEsc during the '
           'Dangi Doctor crawl, so there is no honest baseline to assert '
           'against. Re-run Dangi Doctor with a device attached to generate '
           'a real frame-budget assertion here.',
@@ -555,7 +564,7 @@ import 'test_helper.dart';
 void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  group('$screenName — performance tests', () {
+  group('$nameEsc — performance tests', () {
     // Crawl baseline: $baseline (budget ${budget}ms).
     testWidgets('renders within the ${budget}ms frame budget', (tester) async {
       await setupTest();

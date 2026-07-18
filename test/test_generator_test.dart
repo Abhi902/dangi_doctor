@@ -310,4 +310,35 @@ dev_dependencies:
               "msg.contains('setState() or markNeedsBuild() called during build')")));
     });
   });
+
+  group('escaping and lint cleanliness (#18, #19)', () {
+    test('for-loops in generated interaction tests have braces', () {
+      final interaction = files['home_screen_interaction_test.dart']!;
+      expect(interaction, contains('for (var i = 0; i < 4; i++) {'));
+      expect(interaction, isNot(contains('i++) await')));
+    });
+
+    test('screenName is escaped in generated group descriptions', () async {
+      final p = _fixtureProject(constApp: true);
+      addTearDown(() => p.deleteSync(recursive: true));
+      final generator = TestGenerator(projectPath: p.path);
+      await generator.generateAndSave(
+        screenName: "Detail's \$creen",
+        widgetTree: {},
+        interactionResults: [],
+        issues: [
+          WidgetIssue(
+              type: 'deep_nesting',
+              message: 'test issue',
+              severity: 'info',
+              file: 'home_screen.dart',
+              line: 1),
+        ],
+      );
+      final smoke = File(
+              '${p.path}/integration_test/dangi_doctor/detail_s__creen_smoke_test.dart')
+          .readAsStringSync();
+      expect(smoke, contains(r"group('Detail\'s \$creen — smoke tests'"));
+    });
+  });
 }
