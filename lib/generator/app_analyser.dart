@@ -129,10 +129,14 @@ class AppAnalyser {
     // actually lives (it is frequently in a subfolder, not lib/ root).
     final importPath = foundPath?.replaceFirst('$projectPath/lib/', '');
 
-    // Find class name
-    final classMatch =
-        RegExp(r'class\s+(\w*AppState\w*)\s').firstMatch(content);
-    final className = classMatch?.group(1) ?? 'AppState';
+    // Find class name — prefer a *AppState* class, else fall back to the
+    // first class declared in the file. If the file declares no class at
+    // all, skip state-priming entirely: emitting a nonexistent `AppState()`
+    // into test_helper.dart would not compile.
+    final className =
+        RegExp(r'class\s+(\w*AppState\w*)\s').firstMatch(content)?.group(1) ??
+            RegExp(r'\bclass\s+([A-Za-z_]\w*)').firstMatch(content)?.group(1);
+    if (className == null) return {};
 
     // Find init method — could be static or instance, various names
     String? initMethod;
