@@ -78,12 +78,14 @@ String extractClaudeText(Map<String, dynamic> json) {
   final content = json['content'];
   String? text;
   if (content is List) {
+    final blocks = <String>[];
     for (final block in content) {
       if (block is Map && block['type'] == 'text') {
-        text = block['text'] as String?;
-        if (text != null && text.isNotEmpty) break;
+        final blockText = block['text'] as String?;
+        if (blockText != null && blockText.isNotEmpty) blocks.add(blockText);
       }
     }
+    if (blocks.isNotEmpty) text = blocks.join('\n');
   }
   if (text == null || text.isEmpty) {
     if (stopReason == 'refusal') {

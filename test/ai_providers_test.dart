@@ -93,6 +93,18 @@ void main() {
       expect(text, 'after thinking');
     });
 
+    test('joins ALL text blocks, not just the first', () {
+      final text = extractClaudeText({
+        'content': [
+          {'type': 'text', 'text': 'part one'},
+          {'type': 'tool_use', 'id': 'tu_1', 'name': 'x', 'input': {}},
+          {'type': 'text', 'text': 'part two'},
+        ],
+        'stop_reason': 'end_turn',
+      });
+      expect(text, 'part one\npart two');
+    });
+
     test('flags truncation when stop_reason is max_tokens', () {
       final text = extractClaudeText({
         'content': [
