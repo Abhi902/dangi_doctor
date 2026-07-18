@@ -1136,7 +1136,7 @@ class ScreenNavigator {
       'ext.flutter.inspector.getRootWidgetTree',
       isolateId: isolateId,
       args: {'groupName': 'dangi_nav', 'isSummaryTree': 'true'},
-    );
+    ).timeout(const Duration(seconds: 6));
     final json = response.json ?? {};
     if (json.containsKey('result')) {
       return json['result'] as Map<String, dynamic>;

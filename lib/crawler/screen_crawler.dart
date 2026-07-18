@@ -164,7 +164,7 @@ class ScreenCrawler {
       'ext.flutter.inspector.getRootWidgetTree',
       isolateId: _isolateId,
       args: {'groupName': 'dangi_doctor', 'isSummaryTree': 'true'},
-    );
+    ).timeout(const Duration(seconds: 6));
 
     final json = response.json ?? {};
     if (json.containsKey('result')) {
