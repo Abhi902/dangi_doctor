@@ -49,18 +49,29 @@ final List<RegExp> _vmUrlPatterns = [
 
 class AppLauncher {
   final String projectPath;
+
+  /// Executable used for all `flutter` invocations — overridable in tests.
+  final String flutterCommand;
+
+  /// How long `flutter devices --machine` may take before its process is killed.
+  final Duration deviceScanTimeout;
+
   Process? _flutterProcess;
 
   /// The device ID that was picked during [pickDeviceAndLaunch].
   String? pickedDeviceId;
 
-  AppLauncher({required this.projectPath});
+  AppLauncher({
+    required this.projectPath,
+    this.flutterCommand = 'flutter',
+    this.deviceScanTimeout = const Duration(seconds: 15),
+  });
 
   /// Returns the VM service WebSocket URL.
   /// Sets [pickedDeviceId] as a side-effect.
   Future<String> pickDeviceAndLaunch() async {
     await killAllFlutterProcesses();
-    final devices = await _getDevices();
+    final devices = await getDevices();
 
     if (devices.isEmpty) {
       throw Exception(
@@ -86,19 +97,28 @@ class AppLauncher {
     await AdbRunner.runGlobal(['forward', '--remove', 'tcp:8181']);
   }
 
-  Future<List<Map<String, dynamic>>> _getDevices() async {
+  /// Enumerate devices via `flutter devices --machine`. Public for testing.
+  /// Kills the child process if it exceeds [deviceScanTimeout] — a plain
+  /// `.timeout()` on `Process.run` abandons the future but leaves the
+  /// process running forever.
+  Future<List<Map<String, dynamic>>> getDevices() async {
     print('🔍 Scanning for available devices...\n');
+    Process? process;
     try {
-      final result = await Process.run(
-        'flutter',
+      process = await Process.start(
+        flutterCommand,
         ['devices', '--machine'],
         workingDirectory: projectPath,
-      ).timeout(const Duration(seconds: 15));
+      );
+      final stdoutFuture = process.stdout.transform(const Utf8Decoder()).join();
+      unawaited(process.stderr.drain<void>());
+      await process.exitCode.timeout(deviceScanTimeout);
 
-      final raw = result.stdout.toString().trim();
+      final raw = (await stdoutFuture).trim();
       if (raw.isEmpty) return [];
       return (jsonDecode(raw) as List).cast<Map<String, dynamic>>();
     } catch (_) {
+      process?.kill(ProcessSignal.sigkill);
       return [];
     }
   }
@@ -135,7 +155,7 @@ class AppLauncher {
     print('📱 Launching app on ${device['name']}...');
 
     _flutterProcess = await Process.start(
-      'flutter',
+      flutterCommand,
       [
         'run',
         '-d',

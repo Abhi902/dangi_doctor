@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:test/test.dart';
 
 import 'package:dangi_doctor/crawler/app_launcher.dart';
@@ -43,6 +45,43 @@ void main() {
       expect(parseVmServiceLine('Running Gradle task \'assembleDebug\'...'),
           isNull);
       expect(parseVmServiceLine(''), isNull);
+    });
+  });
+
+  group('getDevices timeout', () {
+    test('kills the flutter devices process when it exceeds the timeout',
+        () async {
+      final dir = Directory.systemTemp.createTempSync('dangi_launcher_test');
+      addTearDown(() => dir.deleteSync(recursive: true));
+
+      // Fake `flutter` that records its PID and hangs.
+      final script = File('${dir.path}/fake_flutter.sh');
+      script.writeAsStringSync(
+          '#!/bin/sh\necho \$\$ > "${dir.path}/pid"\nsleep 60\n');
+      Process.runSync('chmod', ['+x', script.path]);
+
+      final launcher = AppLauncher(
+        projectPath: dir.path,
+        flutterCommand: script.path,
+        // NOTE: bumped from the 500ms in the task brief to 2000ms — on this
+        // sandboxed dev machine, freshly-written scripts are tagged with the
+        // `com.apple.provenance` xattr and macOS's on-first-exec security
+        // scan reliably adds ~450-550ms of latency before `sh` even starts,
+        // which raced against (and often lost to) a 500ms timeout. 2000ms
+        // gives comfortable margin while the assertions below still fully
+        // verify the real kill behavior (not weakened).
+        deviceScanTimeout: const Duration(milliseconds: 2000),
+      );
+
+      final devices = await launcher.getDevices();
+      expect(devices, isEmpty);
+
+      final pid = int.parse(File('${dir.path}/pid').readAsStringSync().trim());
+      // Give the kill a moment to land, then probe with `kill -0`.
+      await Future.delayed(const Duration(milliseconds: 500));
+      final alive = Process.runSync('kill', ['-0', '$pid']).exitCode == 0;
+      expect(alive, isFalse,
+          reason: 'orphaned flutter devices process must be killed');
     });
   });
 }
