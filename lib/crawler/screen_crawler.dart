@@ -3,6 +3,21 @@ import 'dart:io';
 import 'package:vm_service/vm_service.dart';
 import 'package:vm_service/vm_service_io.dart';
 
+/// Pick the isolate running the Flutter framework.
+///
+/// [extensionsByIsolateId] maps isolate id → that isolate's `extensionRPCs`.
+/// Returns the first id (map iteration order) exposing any `ext.flutter.*`
+/// service extension, or null when none qualifies. `.first` is NOT safe:
+/// background/helper isolates can list before the UI isolate.
+String? pickFlutterIsolateId(Map<String, List<String>> extensionsByIsolateId) {
+  for (final entry in extensionsByIsolateId.entries) {
+    if (entry.value.any((rpc) => rpc.startsWith('ext.flutter.'))) {
+      return entry.key;
+    }
+  }
+  return null;
+}
+
 class ScreenCrawler {
   VmService? _vmService;
   String? _isolateId;
@@ -22,8 +37,7 @@ class ScreenCrawler {
     for (var attempt = 1; attempt <= 5; attempt++) {
       try {
         _vmService = await vmServiceConnectUri(wsUrl, log: null);
-        final vm = await _vmService!.getVM();
-        _isolateId = vm.isolates!.first.id!;
+        _isolateId = await _findFlutterIsolateId(_vmService!);
 
         print('✅ Connected to VM service');
         print('📱 Isolate ID: $_isolateId');
@@ -41,6 +55,34 @@ class ScreenCrawler {
         await Future.delayed(const Duration(seconds: 2));
       }
     }
+  }
+
+  /// Find the isolate that exposes `ext.flutter.*` service extensions.
+  ///
+  /// Flutter registers its extensions lazily (around the first frame), so
+  /// poll for up to ~5s before giving up with a clear error.
+  Future<String> _findFlutterIsolateId(VmService service) async {
+    for (var poll = 0; poll < 10; poll++) {
+      final vm = await service.getVM();
+      final extensionsById = <String, List<String>>{};
+      for (final ref in vm.isolates ?? const <IsolateRef>[]) {
+        final id = ref.id;
+        if (id == null) continue;
+        try {
+          final isolate = await service.getIsolate(id);
+          extensionsById[id] = isolate.extensionRPCs ?? const [];
+        } catch (_) {
+          // Isolate exited between getVM and getIsolate — skip it.
+        }
+      }
+      final picked = pickFlutterIsolateId(extensionsById);
+      if (picked != null) return picked;
+      await Future.delayed(const Duration(milliseconds: 500));
+    }
+    throw StateError(
+        'No isolate exposes ext.flutter.* service extensions after 5s. '
+        'Is the target a Flutter app (not a plain Dart process), and has it '
+        'rendered its first frame?');
   }
 
   /// Wait until a specific screen is visible in the widget tree.
