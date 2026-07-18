@@ -172,13 +172,15 @@ class ModelConfig {
   static String get claude =>
       Platform.environment['DANGI_CLAUDE_MODEL'] ?? 'claude-opus-4-8';
   static String get openai =>
-      Platform.environment['DANGI_OPENAI_MODEL'] ?? 'gpt-4o';
+      Platform.environment['DANGI_OPENAI_MODEL'] ?? 'gpt-5.5';
   static String get gemini =>
       Platform.environment['DANGI_GEMINI_MODEL'] ?? 'gemini-2.5-pro';
   static String get groq =>
-      Platform.environment['DANGI_GROQ_MODEL'] ?? 'llama-3.1-8b-instant';
+      // llama-3.1-8b-instant was deprecated by Groq on 2026-06-17;
+      // openai/gpt-oss-20b is Groq's documented migration target.
+      Platform.environment['DANGI_GROQ_MODEL'] ?? 'openai/gpt-oss-20b';
   static String get ollama =>
-      Platform.environment['DANGI_OLLAMA_MODEL'] ?? 'llama3.1';
+      Platform.environment['DANGI_OLLAMA_MODEL'] ?? 'gpt-oss:20b';
   static String get ollamaUrl =>
       Platform.environment['DANGI_OLLAMA_URL'] ?? 'http://localhost:11434';
   static int get maxTokens =>

@@ -165,7 +165,7 @@ You do not need a paid subscription to get AI diagnosis.
 | Provider | Cost | How to get a key |
 |---|---|---|
 | **Groq** | Free tier (14,400 req/day) | Sign up at `console.groq.com` — no credit card |
-| **Ollama** | Free, runs locally | Install from `ollama.com`, run `ollama pull llama3.1` |
+| **Ollama** | Free, runs locally | Install from `ollama.com`, run `ollama pull gpt-oss:20b` |
 | Claude | Paid | `console.anthropic.com` |
 | OpenAI | Paid | `platform.openai.com` |
 | Gemini | Paid | `aistudio.google.com` |
@@ -188,10 +188,10 @@ rename never requires an update:
 | Variable | Default |
 |---|---|
 | `DANGI_CLAUDE_MODEL` | `claude-opus-4-8` |
-| `DANGI_OPENAI_MODEL` | `gpt-4o` |
+| `DANGI_OPENAI_MODEL` | `gpt-5.5` |
 | `DANGI_GEMINI_MODEL` | `gemini-2.5-pro` |
-| `DANGI_GROQ_MODEL` | `llama-3.1-8b-instant` |
-| `DANGI_OLLAMA_MODEL` | `llama3.1` |
+| `DANGI_GROQ_MODEL` | `openai/gpt-oss-20b` |
+| `DANGI_OLLAMA_MODEL` | `gpt-oss:20b` |
 | `DANGI_OLLAMA_URL` | `http://localhost:11434` |
 | `DANGI_MAX_TOKENS` | `4096` |
 

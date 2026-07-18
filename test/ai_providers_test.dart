@@ -3,6 +3,24 @@ import 'package:test/test.dart';
 import 'package:dangi_doctor/ai/knowledge/ai_providers.dart';
 
 void main() {
+  group('ModelConfig defaults', () {
+    // These assert the FALLBACK values — the test environment must not set
+    // DANGI_OPENAI_MODEL / DANGI_GROQ_MODEL / DANGI_OLLAMA_MODEL.
+    test('OpenAI default is a current model (gpt-4o retired as default)', () {
+      expect(ModelConfig.openai, 'gpt-5.5');
+    });
+
+    test('Groq default follows the llama-3.1-8b-instant deprecation', () {
+      // Groq deprecated llama-3.1-8b-instant on 2026-06-17 and recommends
+      // openai/gpt-oss-20b as the migration target.
+      expect(ModelConfig.groq, 'openai/gpt-oss-20b');
+    });
+
+    test('Ollama default is a current local model', () {
+      expect(ModelConfig.ollama, 'gpt-oss:20b');
+    });
+  });
+
   group('AiHttpException classification', () {
     test('429 is a rate limit and retryable', () {
       final e = AiHttpException(
