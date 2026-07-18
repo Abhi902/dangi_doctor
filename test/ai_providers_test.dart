@@ -154,6 +154,25 @@ void main() {
     });
   });
 
+  group('buildOpenAiChatBody', () {
+    test('sends max_completion_tokens, never the legacy max_tokens', () {
+      final body = buildOpenAiChatBody(
+        model: 'gpt-5.5',
+        maxTokens: 4096,
+        systemPrompt: 'sys prompt',
+        userMessage: 'user msg',
+      );
+      expect(body['max_completion_tokens'], 4096);
+      expect(body.containsKey('max_tokens'), isFalse,
+          reason: 'current OpenAI models reject max_tokens');
+      expect(body['model'], 'gpt-5.5');
+      expect(body['messages'], [
+        {'role': 'system', 'content': 'sys prompt'},
+        {'role': 'user', 'content': 'user msg'},
+      ]);
+    });
+  });
+
   group('extractGeminiText', () {
     test('returns candidate text', () {
       final text = extractGeminiText({

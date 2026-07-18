@@ -245,6 +245,25 @@ class ClaudeProvider implements AiProvider {
 
 // ─── OpenAI-compatible (OpenAI, Groq) ────────────────────────────────────────
 
+/// Request body for the OpenAI-compatible chat-completions dialect.
+/// Uses `max_completion_tokens`: OpenAI's current (reasoning-era) models
+/// reject the legacy `max_tokens`, while both OpenAI and Groq accept the new
+/// name for every model — so DANGI_OPENAI_MODEL overrides keep working.
+Map<String, dynamic> buildOpenAiChatBody({
+  required String model,
+  required int maxTokens,
+  required String systemPrompt,
+  required String userMessage,
+}) =>
+    {
+      'model': model,
+      'max_completion_tokens': maxTokens,
+      'messages': [
+        {'role': 'system', 'content': systemPrompt},
+        {'role': 'user', 'content': userMessage},
+      ],
+    };
+
 /// OpenAI and Groq speak the same chat-completions dialect — one
 /// implementation, two configurations.
 class OpenAiCompatibleProvider implements AiProvider {
@@ -272,14 +291,12 @@ class OpenAiCompatibleProvider implements AiProvider {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $apiKey',
       },
-      {
-        'model': model,
-        'max_tokens': ModelConfig.maxTokens,
-        'messages': [
-          {'role': 'system', 'content': systemPrompt},
-          {'role': 'user', 'content': userMessage},
-        ],
-      },
+      buildOpenAiChatBody(
+        model: model,
+        maxTokens: ModelConfig.maxTokens,
+        systemPrompt: systemPrompt,
+        userMessage: userMessage,
+      ),
     );
     return extractOpenAiText(jsonDecode(response.body) as Map<String, dynamic>);
   }
