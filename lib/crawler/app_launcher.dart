@@ -3,20 +3,102 @@ import 'dart:convert';
 import 'dart:io';
 import 'adb_runner.dart';
 
+/// Patterns that carry the VM service URL in `flutter run` output.
+/// NOTE: device names contain spaces ("sdk gphone64 x86 64"), hence `.+`
+/// in the third pattern — `\S+` never matched real output.
+final List<RegExp> _vmUrlPatterns = [
+  RegExp(r'Connecting to VM Service at (ws://\S+)', caseSensitive: false),
+  RegExp(r'VM Service listening on (ws://\S+)', caseSensitive: false),
+  RegExp(r'A Dart VM Service on .+ is available at: (http://\S+)',
+      caseSensitive: false),
+  RegExp(r'(ws://127\.0\.0\.1:\d+/\S*)'),
+];
+
+/// Extract and normalize the VM service WebSocket URL from a single line of
+/// `flutter run` output. Rewrites the host to 127.0.0.1 (traffic goes over
+/// the adb forward), keeps any auth-token path segment, and guarantees a
+/// trailing `/ws`. Returns null when the line carries no VM service URL.
+({String url, int port})? parseVmServiceLine(String line,
+    {int fallbackPort = 8181}) {
+  for (final pattern in _vmUrlPatterns) {
+    final match = pattern.firstMatch(line);
+    if (match == null) continue;
+
+    var url = match.group(1)!.trim();
+    url = url.replaceFirst('http://', 'ws://');
+
+    // Extract the actual port Flutter chose.
+    final portMatch = RegExp(r':(\d+)').firstMatch(url);
+    final actualPort = portMatch != null
+        ? int.tryParse(portMatch.group(1)!) ?? fallbackPort
+        : fallbackPort;
+
+    // Rewrite host but keep token path.
+    url = url.replaceFirstMapped(
+      RegExp(r'ws://[^/]+'),
+      (_) => 'ws://127.0.0.1:$actualPort',
+    );
+
+    if (!url.endsWith('/ws')) {
+      url = '${url.replaceAll(RegExp(r'/?$'), '')}/ws';
+    }
+    return (url: url, port: actualPort);
+  }
+  return null;
+}
+
+/// Parse `/proc/net/tcp` content and pick the port most likely to be the
+/// Dart VM's: loopback (127.0.0.1 = 0100007F), LISTEN (state 0A),
+/// unprivileged (> 1024). When several qualify, the one numerically closest
+/// to [hintPort] wins. Returns null when nothing qualifies.
+int? pickVmPortFromProcNetTcp(String procNetTcp, {int? hintPort}) {
+  final ports = <int>[];
+  for (final line in procNetTcp.split('\n')) {
+    final parts = line.trim().split(RegExp(r'\s+'));
+    if (parts.length < 4) continue;
+    final localAddr = parts[1]; // "0100007F:A28D"
+    final state = parts[3]; // "0A" = LISTEN
+    if (state != '0A') continue;
+    final addrParts = localAddr.split(':');
+    if (addrParts.length != 2) continue;
+    if (addrParts[0] != '0100007F') continue; // must be 127.0.0.1
+    final port = int.tryParse(addrParts[1], radix: 16);
+    if (port == null || port <= 1024) continue;
+    ports.add(port);
+  }
+  if (ports.isEmpty) return null;
+  if (ports.length == 1) return ports.first;
+  if (hintPort != null) {
+    ports.sort((a, b) => (a - hintPort).abs().compareTo((b - hintPort).abs()));
+  }
+  return ports.first;
+}
+
 class AppLauncher {
   final String projectPath;
+
+  /// Executable used for all `flutter` invocations — overridable in tests.
+  final String flutterCommand;
+
+  /// How long `flutter devices --machine` may take before its process is killed.
+  final Duration deviceScanTimeout;
+
   Process? _flutterProcess;
 
   /// The device ID that was picked during [pickDeviceAndLaunch].
   String? pickedDeviceId;
 
-  AppLauncher({required this.projectPath});
+  AppLauncher({
+    required this.projectPath,
+    this.flutterCommand = 'flutter',
+    this.deviceScanTimeout = const Duration(seconds: 15),
+  });
 
   /// Returns the VM service WebSocket URL.
   /// Sets [pickedDeviceId] as a side-effect.
   Future<String> pickDeviceAndLaunch() async {
     await killAllFlutterProcesses();
-    final devices = await _getDevices();
+    final devices = await getDevices();
 
     if (devices.isEmpty) {
       throw Exception(
@@ -42,19 +124,28 @@ class AppLauncher {
     await AdbRunner.runGlobal(['forward', '--remove', 'tcp:8181']);
   }
 
-  Future<List<Map<String, dynamic>>> _getDevices() async {
+  /// Enumerate devices via `flutter devices --machine`. Public for testing.
+  /// Kills the child process if it exceeds [deviceScanTimeout] — a plain
+  /// `.timeout()` on `Process.run` abandons the future but leaves the
+  /// process running forever.
+  Future<List<Map<String, dynamic>>> getDevices() async {
     print('🔍 Scanning for available devices...\n');
+    Process? process;
     try {
-      final result = await Process.run(
-        'flutter',
+      process = await Process.start(
+        flutterCommand,
         ['devices', '--machine'],
         workingDirectory: projectPath,
-      ).timeout(const Duration(seconds: 15));
+      );
+      final stdoutFuture = process.stdout.transform(const Utf8Decoder()).join();
+      unawaited(process.stderr.drain<void>());
+      await process.exitCode.timeout(deviceScanTimeout);
 
-      final raw = result.stdout.toString().trim();
+      final raw = (await stdoutFuture).trim();
       if (raw.isEmpty) return [];
       return (jsonDecode(raw) as List).cast<Map<String, dynamic>>();
     } catch (_) {
+      process?.kill(ProcessSignal.sigkill);
       return [];
     }
   }
@@ -91,7 +182,7 @@ class AppLauncher {
     print('📱 Launching app on ${device['name']}...');
 
     _flutterProcess = await Process.start(
-      'flutter',
+      flutterCommand,
       [
         'run',
         '-d',
@@ -108,67 +199,45 @@ class AppLauncher {
     final spinner = _ProgressSpinner();
     spinner.start('Building app');
 
-    Future<void> handleOutput(String text) async {
+    var vmUrlClaimed = false;
+
+    Future<void> handleLine(String line) async {
       // Only show clean status updates — suppress raw Android logs
-      if (text.contains('Running Gradle')) {
+      if (line.contains('Running Gradle')) {
         spinner.update('Running Gradle build');
-      } else if (text.contains('Built build/')) {
+      } else if (line.contains('Built build/')) {
         spinner.update('Build complete — installing on device');
-      } else if (text.contains('Syncing files')) {
+      } else if (line.contains('Syncing files')) {
         spinner.update('Syncing files to device');
-      } else if (text.contains('Flutter run key commands')) {
+      } else if (line.contains('Flutter run key commands')) {
         spinner.update('App running — waiting for VM service');
       }
 
-      if (wsCompleter.isCompleted) return;
+      if (vmUrlClaimed) return;
+      final parsed = parseVmServiceLine(line, fallbackPort: port);
+      if (parsed == null) return;
+      // Claim synchronously — BEFORE the first await — so a second matching
+      // line cannot also pass the guard while we forward the port.
+      vmUrlClaimed = true;
 
-      // Extract VM service URL — this is all we actually need
-      final patterns = [
-        RegExp(r'Connecting to VM Service at (ws://\S+)', caseSensitive: false),
-        RegExp(r'VM Service listening on (ws://\S+)', caseSensitive: false),
-        RegExp(r'A Dart VM Service on \S+ is available at: (http://\S+)',
-            caseSensitive: false),
-        RegExp(r'(ws://127\.0\.0\.1:\d+/\S*)'),
-      ];
+      spinner.stop('✅ App launched successfully');
+      print('  📡 VM service on port ${parsed.port}');
 
-      for (final pattern in patterns) {
-        final match = pattern.firstMatch(text);
-        if (match != null) {
-          var url = match.group(1)!.trim();
-          url = url.replaceFirst('http://', 'ws://');
-
-          // Extract the actual port Flutter chose
-          final portMatch = RegExp(r':(\d+)').firstMatch(url);
-          final actualPort = portMatch != null
-              ? int.tryParse(portMatch.group(1)!) ?? port
-              : port;
-
-          // Rewrite host but keep token path
-          url = url.replaceFirstMapped(
-            RegExp(r'ws://[^/]+'),
-            (_) => 'ws://127.0.0.1:$actualPort',
-          );
-
-          // Ensure ends with /ws
-          if (!url.endsWith('/ws')) {
-            url = '${url.replaceAll(RegExp(r'/?$'), '')}/ws';
-          }
-
-          spinner.stop('✅ App launched successfully');
-          print('  📡 VM service on port $actualPort');
-
-          // Forward port, remapping to the real device port if Flutter lied
-          if (!isEmulator) {
-            await _forwardWithActualDevicePort(deviceId, actualPort);
-          }
-          wsCompleter.complete(url);
-          return;
-        }
+      // Forward port, remapping to the real device port if Flutter lied
+      if (!isEmulator) {
+        await _forwardWithActualDevicePort(deviceId, parsed.port);
       }
+      wsCompleter.complete(parsed.url);
     }
 
-    _flutterProcess!.stdout.transform(const Utf8Decoder()).listen(handleOutput);
-    _flutterProcess!.stderr.transform(const Utf8Decoder()).listen(handleOutput);
+    _flutterProcess!.stdout
+        .transform(const Utf8Decoder())
+        .transform(const LineSplitter())
+        .listen(handleLine);
+    _flutterProcess!.stderr
+        .transform(const Utf8Decoder())
+        .transform(const LineSplitter())
+        .listen(handleLine);
 
     final wsUrl = await wsCompleter.future.timeout(
       const Duration(minutes: 3),
@@ -225,27 +294,8 @@ class AppLauncher {
         ['shell', 'cat', '/proc/net/tcp'],
         timeout: const Duration(seconds: 5),
       );
-      final ports = <int>[];
-      for (final line in result.stdout.toString().split('\n')) {
-        final parts = line.trim().split(RegExp(r'\s+'));
-        if (parts.length < 4) continue;
-        final localAddr = parts[1]; // "0100007F:A28D"
-        final state = parts[3]; // "0A" = LISTEN
-        if (state != '0A') continue;
-        final addrParts = localAddr.split(':');
-        if (addrParts.length != 2) continue;
-        if (addrParts[0] != '0100007F') continue; // must be 127.0.0.1
-        final port = int.tryParse(addrParts[1], radix: 16);
-        if (port == null || port <= 1024) continue;
-        ports.add(port);
-      }
-      if (ports.isEmpty) return null;
-      if (ports.length == 1) return ports.first;
-      if (hintPort != null) {
-        ports.sort(
-            (a, b) => (a - hintPort).abs().compareTo((b - hintPort).abs()));
-      }
-      return ports.first;
+      return pickVmPortFromProcNetTcp(result.stdout.toString(),
+          hintPort: hintPort);
     } catch (_) {
       return null;
     }

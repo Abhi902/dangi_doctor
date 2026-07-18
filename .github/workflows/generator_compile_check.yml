@@ -1,0 +1,35 @@
+# Regression guard for the package's core promise: tests emitted by the
+# generator must be analyzer-clean under the target project's own lints.
+# Runs the generator against playground/ (no device needed) and requires
+# `flutter analyze` on the emitted integration_test/dangi_doctor/ to
+# report 0 issues.
+name: Generator fixture compile check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  fixture-compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dangi_doctor dependencies
+        run: dart pub get
+
+      - name: Run the generator against playground/
+        run: dart run tool/generate_playground_tests.dart playground
+
+      - name: Install playground dependencies
+        run: flutter pub get
+        working-directory: playground
+
+      - name: Analyze emitted tests — must be 0 issues
+        run: flutter analyze integration_test/dangi_doctor
+        working-directory: playground

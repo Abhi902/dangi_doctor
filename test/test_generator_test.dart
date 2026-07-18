@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:test/test.dart';
 
 import 'package:dangi_doctor/analysis/tree_analyser.dart';
+import 'package:dangi_doctor/analysis/performance.dart';
 import 'package:dangi_doctor/generator/test_generator.dart';
 
 /// Builds a throwaway Flutter-project skeleton the generator can analyse.
@@ -86,6 +87,28 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Text('tap \$index'),
       ),
     );
+  }
+}
+''');
+
+  // setState() called directly inside build() — the build_side_effects
+  // detector must produce an honest always-failing test, not a dead grep.
+  File('${dir.path}/lib/pages/counter_box.dart').writeAsStringSync('''
+import 'package:flutter/material.dart';
+
+class CounterBox extends StatefulWidget {
+  const CounterBox({super.key});
+  @override
+  State<CounterBox> createState() => _CounterBoxState();
+}
+
+class _CounterBoxState extends State<CounterBox> {
+  int n = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    setState(() => n++);
+    return Text('count \$n');
   }
 }
 ''');
@@ -199,6 +222,123 @@ void main() {
       final smoke = f['home_screen_smoke_test.dart']!;
       expect(smoke, contains('pumpAppCollecting(tester, MyApp())'));
       expect(smoke, isNot(contains('const MyApp()')));
+    });
+  });
+
+  group('missing test dependencies (#15)', () {
+    test('missingTestDepsStanza reports both deps when neither is declared',
+        () {
+      final stanza = missingTestDepsStanza('name: app\n');
+      expect(stanza, isNotNull);
+      expect(stanza, contains('dev_dependencies:'));
+      expect(stanza, contains('flutter_test:'));
+      expect(stanza, contains('integration_test:'));
+    });
+
+    test('missingTestDepsStanza is null when both are present', () {
+      expect(missingTestDepsStanza('''
+name: app
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+'''), isNull);
+    });
+
+    test('generated README warns prominently about the missing stanza', () {
+      final readme = files['README.md']!;
+      expect(readme, contains('integration_test:'));
+      expect(readme, contains('flutter pub get'));
+      expect(readme, contains('will NOT compile'));
+    });
+  });
+
+  group('honest perf test (#16)', () {
+    test('emits a clearly-labeled skip when no crawl perf data exists', () {
+      final perf = files['home_screen_perf_test.dart']!;
+      expect(perf, contains('skip:'));
+      expect(perf, contains('No performance data was collected'));
+      expect(perf, isNot(contains('watchPerformance')));
+      expect(perf, isNot(contains("import 'package:flutter/material.dart';")));
+    });
+
+    test('asserts a frame-budget threshold when crawl data exists', () async {
+      final p = _fixtureProject(constApp: true);
+      addTearDown(() => p.deleteSync(recursive: true));
+      final generator = TestGenerator(projectPath: p.path);
+      await generator.generateAndSave(
+        screenName: 'HomeScreen',
+        widgetTree: {},
+        interactionResults: [],
+        issues: [
+          WidgetIssue(
+              type: 'deep_nesting',
+              message: 'test issue',
+              severity: 'info',
+              file: 'home_screen.dart',
+              line: 1),
+        ],
+        performance: ScreenPerformance(
+          screenName: 'HomeScreen',
+          frames: [
+            FrameData(buildMs: 5.0, rasterMs: 3.0),
+            FrameData(buildMs: 20.0, rasterMs: 3.0),
+          ],
+          memoryKb: 0,
+        ),
+      );
+      final perf = File(
+              '${p.path}/integration_test/dangi_doctor/home_screen_perf_test.dart')
+          .readAsStringSync();
+      expect(perf, contains('watchPerformance'));
+      expect(perf, contains('average_frame_build_time_millis'));
+      expect(perf, contains('lessThan(16.0)')); // default frameBudgetMs
+      expect(perf, contains('Crawl baseline'));
+    });
+  });
+
+  group('build_side_effects honest test (#17)', () {
+    test('generates an always-failing test instead of a dead error grep', () {
+      final bugs = files['known_bugs_test.dart']!;
+      expect(bugs, contains('BUILD SIDE EFFECT DETECTED'));
+      expect(bugs, contains('counter_box.dart'));
+      expect(bugs, contains('Delete this test once the fix is applied.'));
+      expect(
+          bugs,
+          isNot(contains(
+              "msg.contains('setState() or markNeedsBuild() called during build')")));
+    });
+  });
+
+  group('escaping and lint cleanliness (#18, #19)', () {
+    test('for-loops in generated interaction tests have braces', () {
+      final interaction = files['home_screen_interaction_test.dart']!;
+      expect(interaction, contains('for (var i = 0; i < 4; i++) {'));
+      expect(interaction, isNot(contains('i++) await')));
+    });
+
+    test('screenName is escaped in generated group descriptions', () async {
+      final p = _fixtureProject(constApp: true);
+      addTearDown(() => p.deleteSync(recursive: true));
+      final generator = TestGenerator(projectPath: p.path);
+      await generator.generateAndSave(
+        screenName: "Detail's \$creen",
+        widgetTree: {},
+        interactionResults: [],
+        issues: [
+          WidgetIssue(
+              type: 'deep_nesting',
+              message: 'test issue',
+              severity: 'info',
+              file: 'home_screen.dart',
+              line: 1),
+        ],
+      );
+      final smoke = File(
+              '${p.path}/integration_test/dangi_doctor/detail_s__creen_smoke_test.dart')
+          .readAsStringSync();
+      expect(smoke, contains(r"group('Detail\'s \$creen — smoke tests'"));
     });
   });
 }

@@ -51,6 +51,14 @@ void main(List<String> argv) async {
   final projectPath = _resolveProjectPath(config);
   print('📁 Project: $projectPath\n');
 
+  if (config.rescan) {
+    final fingerprint = File('$projectPath/.dangi_doctor/project.json');
+    if (fingerprint.existsSync()) {
+      fingerprint.deleteSync();
+      print('🔄 --rescan: cached project fingerprint deleted — rescanning.\n');
+    }
+  }
+
   // Step 1 — pick AI provider (unless --no-ai)
   final provider = config.noAi ? null : await AiProviderDetector.detect();
   if (provider == null) print('⚡ Crawler-only mode — no AI diagnosis.\n');
@@ -128,8 +136,9 @@ void main(List<String> argv) async {
   }
 
   if (wsUrl.isEmpty) {
-    print('❌ No VM service URL. Exiting.');
-    exit(1);
+    stderr.writeln('❌ No VM service URL. Exiting.');
+    exitCode = 64; // EX_USAGE — consistent with the non-terminal path above
+    return;
   }
 
   final crawler = ScreenCrawler(projectPath: projectPath, wsUrl: wsUrl);
@@ -213,7 +222,8 @@ void main(List<String> argv) async {
       }
     }
 
-    // Generate test scripts per screen
+    // Generate test scripts per screen — plumb each screen's REAL Phase-1/2
+    // performance capture into the perf-test emitter (#16).
     final generator = TestGenerator(projectPath: projectPath);
     for (final screen in screens) {
       await generator.generateAndSave(
@@ -221,6 +231,7 @@ void main(List<String> argv) async {
         widgetTree: screen.widgetTree,
         interactionResults: [],
         issues: screen.issues,
+        performance: screen.performance,
       );
     }
 

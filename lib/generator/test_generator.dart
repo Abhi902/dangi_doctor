@@ -1,4 +1,5 @@
 import 'dart:io';
+import '../analysis/performance.dart';
 import '../crawler/interaction_engine.dart';
 import '../analysis/tree_analyser.dart';
 import 'app_analyser.dart';
@@ -13,11 +14,20 @@ class TestGenerator {
   /// Exposes the cached AppAnalysis (available after the first generateAndSave call).
   AppAnalysis? get cachedAnalysis => _analysis;
 
+  /// Escapes [s] for safe embedding inside a single-quoted Dart string
+  /// literal in generated code.
+  static String dartEsc(String s) => s
+      .replaceAll('\\', '\\\\')
+      .replaceAll("'", "\\'")
+      .replaceAll('\$', '\\\$')
+      .replaceAll('\n', '\\n');
+
   Future<List<String>> generateAndSave({
     required String screenName,
     required Map<String, dynamic> widgetTree,
     required List<InteractionResult> interactionResults,
     required List<WidgetIssue> issues,
+    ScreenPerformance? performance,
   }) async {
     print('\n📝 Generating Flutter test scripts for $screenName...');
 
@@ -37,9 +47,20 @@ class TestGenerator {
     // Shared files (helper, project-wide bug tests, README) once per run
     if (!_sharedFilesGenerated) {
       _sharedFilesGenerated = true;
+      final pubspecFile = File('$projectPath/pubspec.yaml');
+      final missingDeps = pubspecFile.existsSync()
+          ? missingTestDepsStanza(pubspecFile.readAsStringSync())
+          : null;
+      if (missingDeps != null) {
+        print('  ⚠️  Missing dev-dependencies — the generated tests will NOT '
+            'compile until you add this to pubspec.yaml and run '
+            '`flutter pub get`:\n');
+        print(missingDeps.split('\n').map((l) => '      $l').join('\n'));
+        print('');
+      }
       _generateTestHelper(outputDir.path, analysis);
       _generateKnownBugsTest(outputDir.path, analysis);
-      _saveReadme(outputDir.path, analysis);
+      _saveReadme(outputDir.path, analysis, missingDeps);
     }
 
     final screenSnake = _toSnakeCase(screenName);
@@ -62,7 +83,7 @@ class TestGenerator {
     print('  ✍️  Performance test...');
     final perfFile = '${outputDir.path}/${screenSnake}_perf_test.dart';
     File(perfFile).writeAsStringSync(
-        _generatePerfTest(screenName, interactionResults, analysis));
+        _generatePerfTest(screenName, performance, analysis));
     savedFiles.add(perfFile);
     print('  ✅ ${perfFile.split('/').last}');
 
@@ -203,6 +224,7 @@ Future<void> pumpApp(WidgetTester tester, Widget app) async {
     Map<String, dynamic> sourceInfo,
     AppAnalysis a,
   ) {
+    final nameEsc = dartEsc(screenName);
     final keys = (sourceInfo['keys'] as List<String>)
         .where((k) => !RegExp(r'^[a-f0-9]{20,}$').hasMatch(k))
         .where((k) => k.length < 50)
@@ -228,7 +250,7 @@ import 'test_helper.dart';
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  group('$screenName — smoke tests', () {
+  group('$nameEsc — smoke tests', () {
     testWidgets('app launches without crashing', (tester) async {
       await setupTest();
       final errors = await pumpAppCollecting(tester, ${a.runAppCall});
@@ -297,26 +319,19 @@ $riskTests
         '    // ─── Bug-specific tests detected by Dangi Doctor static analysis ───');
 
     for (final risk in risks) {
-      String esc(String s) => s
-          .replaceAll('\\', '\\\\')
-          .replaceAll("'", "\\'")
-          .replaceAll('\$', '\\\$')
-          .replaceAll('\n', '\\n');
-
-      final descEsc = esc(risk.description);
-      final fixEsc = esc(risk.suggestedFix);
+      final descEsc = dartEsc(risk.description);
+      final fixEsc = dartEsc(risk.suggestedFix);
       final fileLine = '${risk.file}:${risk.line}';
 
       switch (risk.type) {
         case 'late_field_double_init':
-          final fieldEsc = risk.fieldName.replaceAll("'", "\\'");
-          final fieldName = risk.fieldName;
-          final callerMethod = risk.callerMethod;
+          final fieldEsc = dartEsc(risk.fieldName);
+          final methodEsc = dartEsc(risk.callerMethod);
           buffer.writeln(
             '\n'
             "    testWidgets(\n"
             "        'BUG: $fileLine — '\n"
-            "        'late field `$fieldName` double-init in `$callerMethod()`',\n"
+            "        'late field `$fieldEsc` double-init in `$methodEsc()`',\n"
             '        (tester) async {\n'
             '      await setupTest();\n'
             '      final errors = await pumpAppCollecting(tester, $runAppCall);\n'
@@ -376,35 +391,27 @@ $riskTests
           );
 
         case 'build_side_effects':
-          final fieldName = risk.fieldName;
-          final errorFragment = fieldName == 'setState'
-              ? 'setState() or markNeedsBuild() called during build'
-              : 'build() must be synchronous';
+          // A side effect inside build() cannot be reliably provoked from a
+          // pumpWidget grep — the old error-message match never fired.
+          // Generate an honest always-failing test instead ("delete once
+          // fixed"), same pattern as the leak test below.
+          final fieldEsc = dartEsc(risk.fieldName);
           buffer.writeln(
             '\n'
-            "    testWidgets(\n"
-            "        'BUG: $fileLine — side effect (`$fieldName`) inside build()',\n"
-            '        (tester) async {\n'
-            '      await setupTest();\n'
-            '      final errors = await pumpAppCollecting(tester, $runAppCall);\n'
-            '\n'
-            '      final matching = errors.where((e) {\n'
-            '        final msg = e.exception.toString();\n'
-            "        return msg.contains('$errorFragment');\n"
-            '      }).toList();\n'
-            '\n'
-            '      expect(\n'
-            '        matching,\n'
-            '        isEmpty,\n'
-            "        reason: '━━━ BUG DETECTED ━━━\\n'\n"
-            "            'File: $fileLine\\n'\n"
-            "            '\\n'\n"
-            "            'Problem:\\n'\n"
-            "            '$descEsc\\n'\n"
-            "            '\\n'\n"
-            "            'Fix:\\n'\n"
-            "            '$fixEsc\\n'\n"
-            "            '━━━━━━━━━━━━━━━━━━━',\n"
+            "    test(\n"
+            "        'BUG: $fileLine — side effect (`$fieldEsc`) inside build()',\n"
+            '        () {\n'
+            "      fail(\n"
+            "        '━━━ BUILD SIDE EFFECT DETECTED ━━━\\n'\n"
+            "        'File: $fileLine\\n'\n"
+            "        '\\n'\n"
+            "        'Problem:\\n'\n"
+            "        '$descEsc\\n'\n"
+            "        '\\n'\n"
+            "        'Fix:\\n'\n"
+            "        '$fixEsc\\n'\n"
+            "        '━━━━━━━━━━━━━━━━━━━\\n'\n"
+            "        'Delete this test once the fix is applied.',\n"
             '      );\n'
             '    });\n',
           );
@@ -412,11 +419,11 @@ $riskTests
         case 'stream_subscription_leak':
           // Leaks can't be caught via pumpWidget — generate a reminder test
           // that always fails so the developer must acknowledge the fix.
-          final fieldName = risk.fieldName;
+          final fieldEsc = dartEsc(risk.fieldName);
           buffer.writeln(
             '\n'
             "    test(\n"
-            "        'BUG: $fileLine — StreamSubscription `$fieldName` not cancelled in dispose()',\n"
+            "        'BUG: $fileLine — StreamSubscription `$fieldEsc` not cancelled in dispose()',\n"
             '        () {\n'
             "      fail(\n"
             "        '━━━ MEMORY LEAK DETECTED ━━━\\n'\n"
@@ -444,6 +451,7 @@ $riskTests
     List<InteractionResult> results,
     AppAnalysis a,
   ) {
+    final nameEsc = dartEsc(screenName);
     final tappableLines =
         sourceInfo['tappable_lines'] as List<Map<String, dynamic>>;
     final keys = (sourceInfo['keys'] as List<String>)
@@ -463,7 +471,9 @@ $riskTests
         await tester.ensureVisible(widgets.first);
         await tester.pump();
         await tester.tap(widgets.first);
-        for (var i = 0; i < 4; i++) await tester.pump(const Duration(milliseconds: 500));
+        for (var i = 0; i < 4; i++) {
+          await tester.pump(const Duration(milliseconds: 500));
+        }
         expect(tester.takeException(), isNull);
       }
     });''';
@@ -478,7 +488,9 @@ $riskTests
         await tester.ensureVisible(widget);
         await tester.pump();
         await tester.tap(widget);
-        for (var i = 0; i < 4; i++) await tester.pump(const Duration(milliseconds: 500));
+        for (var i = 0; i < 4; i++) {
+          await tester.pump(const Duration(milliseconds: 500));
+        }
         expect(tester.takeException(), isNull);
       }
     });''').join('\n');
@@ -496,7 +508,7 @@ import 'test_helper.dart';
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  group('$screenName — interaction tests', () {
+  group('$nameEsc — interaction tests', () {
 $sourceTests
 $keyTests
   });
@@ -506,43 +518,76 @@ $keyTests
 
   String _generatePerfTest(
     String screenName,
-    List<InteractionResult> results,
+    ScreenPerformance? crawlPerf,
     AppAnalysis a,
   ) {
-    final janky = results
-        .where((r) => r.executed && (r.performance?.jankyFrames ?? 0) > 0)
-        .toList();
+    final snake = _toSnakeCase(screenName);
+    final nameEsc = dartEsc(screenName);
+    final budget = PerformanceCapture.frameBudgetMs.toStringAsFixed(1);
+    final hasData = crawlPerf != null && crawlPerf.totalFrames > 0;
 
-    final jankyNote = janky.isNotEmpty
-        ? janky
-            .map((r) => '  // ⚠️  ${r.interaction.widgetType} at '
-                '${r.interaction.file}:${r.interaction.line} — '
-                '${r.performance!.jankyFrames} janky frames')
-            .join('\n')
-        : '  // No interaction performance data was collected in this run.';
-
-    return '''// Generated by Dangi Doctor 🩺
+    final header = '''// Generated by Dangi Doctor 🩺
 // Screen: $screenName — performance regression tests
-// Run: flutter test integration_test/dangi_doctor/${_toSnakeCase(screenName)}_perf_test.dart -d <device_id>
+// Run: flutter test integration_test/dangi_doctor/${snake}_perf_test.dart -d <device_id>
 
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+''';
+
+    if (!hasData) {
+      return '''$header
+void main() {
+  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+
+  group('$nameEsc — performance tests', () {
+    test(
+      'renders within frame budget — SKIPPED (no crawl data)',
+      () {},
+      skip: 'No performance data was collected for $nameEsc during the '
+          'Dangi Doctor crawl, so there is no honest baseline to assert '
+          'against. Re-run Dangi Doctor with a device attached to generate '
+          'a real frame-budget assertion here.',
+    );
+  });
+}
+''';
+    }
+
+    final baseline = 'avg build ${crawlPerf.avgBuildMs.toStringAsFixed(1)}ms, '
+        '${crawlPerf.jankyFrames} janky of ${crawlPerf.totalFrames} frames';
+
+    return '''$header
 import 'package:${a.packageName}/main.dart';
 import 'test_helper.dart';
 
 void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  group('$screenName — performance tests', () {
-    testWidgets('renders within frame budget', (tester) async {
+  group('$nameEsc — performance tests', () {
+    // Crawl baseline: $baseline (budget ${budget}ms).
+    testWidgets('renders within the ${budget}ms frame budget', (tester) async {
       await setupTest();
       await binding.watchPerformance(() async {
         await pumpApp(tester, ${a.runAppCall});
-      }, reportKey: '${_toSnakeCase(screenName)}');
-    });
+      }, reportKey: '$snake');
 
-$jankyNote
+      final summary = binding.reportData?['$snake'] as Map<String, dynamic>?;
+      expect(
+        summary,
+        isNotNull,
+        reason: 'watchPerformance produced no report — run this test on a '
+            'device or emulator via `flutter test ... -d <device_id>`.',
+      );
+      final avgBuildMs =
+          (summary!['average_frame_build_time_millis'] as num).toDouble();
+      expect(
+        avgBuildMs,
+        lessThan($budget),
+        reason: 'Average frame build time \${avgBuildMs.toStringAsFixed(1)}ms '
+            'exceeds the ${budget}ms budget measured for the crawl device '
+            '(crawl baseline: $baseline).',
+      );
+    });
   });
 }
 ''';
@@ -625,13 +670,26 @@ $jankyNote
     }
   }
 
-  void _saveReadme(String dirPath, AppAnalysis a) {
+  void _saveReadme(String dirPath, AppAnalysis a, String? missingDeps) {
+    final depsWarning = missingDeps == null
+        ? ''
+        : '''## ⚠️ Before running: add missing dev-dependencies
+
+These tests will NOT compile until your `pubspec.yaml` declares:
+
+```yaml
+$missingDeps
+```
+
+Then run `flutter pub get`.
+
+''';
     File('$dirPath/README.md')
         .writeAsStringSync('''# Dangi Doctor — Generated Tests 🩺
 
 Auto-generated from live app analysis. Re-run Dangi Doctor after UI changes.
 
-## Quick start
+$depsWarning## Quick start
 
 ```bash
 flutter test integration_test/dangi_doctor/ \\
@@ -664,4 +722,21 @@ test backend or seed auth state before running.
         .replaceAll(RegExp(r'[^a-z0-9_]'), '_')
         .toLowerCase();
   }
+}
+
+/// Returns the exact `dev_dependencies` stanza the target project is missing
+/// (`flutter_test` / `integration_test`), or null when both are declared.
+/// The generated tests cannot compile without them.
+String? missingTestDepsStanza(String pubspecContent) {
+  final missing = <String>[];
+  if (!RegExp(r'^\s*flutter_test\s*:', multiLine: true)
+      .hasMatch(pubspecContent)) {
+    missing.add('  flutter_test:\n    sdk: flutter');
+  }
+  if (!RegExp(r'^\s*integration_test\s*:', multiLine: true)
+      .hasMatch(pubspecContent)) {
+    missing.add('  integration_test:\n    sdk: flutter');
+  }
+  if (missing.isEmpty) return null;
+  return 'dev_dependencies:\n${missing.join('\n')}';
 }
