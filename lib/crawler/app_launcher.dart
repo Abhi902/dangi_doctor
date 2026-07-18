@@ -47,6 +47,33 @@ final List<RegExp> _vmUrlPatterns = [
   return null;
 }
 
+/// Parse `/proc/net/tcp` content and pick the port most likely to be the
+/// Dart VM's: loopback (127.0.0.1 = 0100007F), LISTEN (state 0A),
+/// unprivileged (> 1024). When several qualify, the one numerically closest
+/// to [hintPort] wins. Returns null when nothing qualifies.
+int? pickVmPortFromProcNetTcp(String procNetTcp, {int? hintPort}) {
+  final ports = <int>[];
+  for (final line in procNetTcp.split('\n')) {
+    final parts = line.trim().split(RegExp(r'\s+'));
+    if (parts.length < 4) continue;
+    final localAddr = parts[1]; // "0100007F:A28D"
+    final state = parts[3]; // "0A" = LISTEN
+    if (state != '0A') continue;
+    final addrParts = localAddr.split(':');
+    if (addrParts.length != 2) continue;
+    if (addrParts[0] != '0100007F') continue; // must be 127.0.0.1
+    final port = int.tryParse(addrParts[1], radix: 16);
+    if (port == null || port <= 1024) continue;
+    ports.add(port);
+  }
+  if (ports.isEmpty) return null;
+  if (ports.length == 1) return ports.first;
+  if (hintPort != null) {
+    ports.sort((a, b) => (a - hintPort).abs().compareTo((b - hintPort).abs()));
+  }
+  return ports.first;
+}
+
 class AppLauncher {
   final String projectPath;
 
@@ -267,27 +294,8 @@ class AppLauncher {
         ['shell', 'cat', '/proc/net/tcp'],
         timeout: const Duration(seconds: 5),
       );
-      final ports = <int>[];
-      for (final line in result.stdout.toString().split('\n')) {
-        final parts = line.trim().split(RegExp(r'\s+'));
-        if (parts.length < 4) continue;
-        final localAddr = parts[1]; // "0100007F:A28D"
-        final state = parts[3]; // "0A" = LISTEN
-        if (state != '0A') continue;
-        final addrParts = localAddr.split(':');
-        if (addrParts.length != 2) continue;
-        if (addrParts[0] != '0100007F') continue; // must be 127.0.0.1
-        final port = int.tryParse(addrParts[1], radix: 16);
-        if (port == null || port <= 1024) continue;
-        ports.add(port);
-      }
-      if (ports.isEmpty) return null;
-      if (ports.length == 1) return ports.first;
-      if (hintPort != null) {
-        ports.sort(
-            (a, b) => (a - hintPort).abs().compareTo((b - hintPort).abs()));
-      }
-      return ports.first;
+      return pickVmPortFromProcNetTcp(result.stdout.toString(),
+          hintPort: hintPort);
     } catch (_) {
       return null;
     }

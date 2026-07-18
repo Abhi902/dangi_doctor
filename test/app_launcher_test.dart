@@ -84,4 +84,42 @@ void main() {
           reason: 'orphaned flutter devices process must be killed');
     });
   });
+
+  group('pickVmPortFromProcNetTcp', () {
+    // Real-shaped /proc/net/tcp: header + entries. 0xA28D=41613 (loopback
+    // LISTEN), 0x829F=33439 (loopback LISTEN), 0x1F90=8080 (wildcard LISTEN,
+    // must be ignored), one ESTABLISHED (state 01), one low port (0x0050=80).
+    const fixture = '''
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:A28D 00000000:0000 0A 00000000:00000000 00:00000000 00000000 10190        0 3810203 1 0000000000000000 100 0 0 10 0
+   1: 00000000:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 2299841 1 0000000000000000 100 0 0 10 0
+   2: 0100007F:829F 00000000:0000 0A 00000000:00000000 00:00000000 00000000 10190        0 3810377 1 0000000000000000 100 0 0 10 0
+   3: 0100007F:0050 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1834550 1 0000000000000000 100 0 0 10 0
+   4: 0100007F:A28D 0100007F:D3A1 01 00000000:00000000 00:00000000 00000000 10190        0 3810442 1 0000000000000000 20 4 30 10 -1
+''';
+
+    test('finds loopback LISTEN ports and prefers the one nearest the hint',
+        () {
+      expect(pickVmPortFromProcNetTcp(fixture, hintPort: 33500), 33439);
+      expect(pickVmPortFromProcNetTcp(fixture, hintPort: 41000), 41613);
+    });
+
+    test('ignores wildcard-bound, established, and privileged ports', () {
+      const only = '''
+   0: 00000000:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 1 1
+   1: 0100007F:0050 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 2 1
+   2: 0100007F:A28D 0100007F:D3A1 01 00000000:00000000 00:00000000 00000000 10190        0 3 1
+''';
+      expect(pickVmPortFromProcNetTcp(only), isNull);
+    });
+
+    test('single candidate wins without a hint; garbage yields null', () {
+      const single =
+          '   0: 0100007F:A28D 00000000:0000 0A 00000000:00000000 00:00000000 00000000 10190        0 3810203 1';
+      expect(pickVmPortFromProcNetTcp(single), 41613);
+      expect(pickVmPortFromProcNetTcp(''), isNull);
+      expect(pickVmPortFromProcNetTcp('cat: /proc/net/tcp: Permission denied'),
+          isNull);
+    });
+  });
 }
