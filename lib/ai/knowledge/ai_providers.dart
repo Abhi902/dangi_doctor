@@ -92,6 +92,15 @@ int? computeRetryDelaySeconds({
 const _truncationNote =
     '\n\n⚠️  [Report truncated — the model hit its output token limit.]';
 
+/// Crawled app text is interpolated inside a `<crawled_data>` fence in the
+/// prompt. A literal closing tag inside that text would terminate the fence
+/// early and let crawled content masquerade as instructions to the model —
+/// entity-escape the tag (open or close, any case) before interpolation.
+String escapeCrawledDataFence(String text) => text.replaceAllMapped(
+      RegExp(r'</?crawled_data>', caseSensitive: false),
+      (m) => m.group(0)!.replaceAll('<', '&lt;').replaceAll('>', '&gt;'),
+    );
+
 /// Extract the answer text from an Anthropic Messages API response.
 /// Guards the non-happy paths: refusals, empty content, truncation.
 String extractClaudeText(Map<String, dynamic> json) {
@@ -589,7 +598,7 @@ class AiClient {
 
     final systemPrompt = await _system();
 
-    final screenContext = _buildScreenContext(
+    final screenContext = escapeCrawledDataFence(_buildScreenContext(
       screenName: screenName,
       totalWidgets: totalWidgets,
       maxDepth: maxDepth,
@@ -600,9 +609,9 @@ class AiClient {
       jankyFrames: jankyFrames,
       totalFrames: totalFrames,
       interactionReport: interactionReport,
-    );
+    ));
 
-    final issueText = _formatIssues(issues);
+    final issueText = escapeCrawledDataFence(_formatIssues(issues));
     // Crawled content (screen names, widget labels, messages) is untrusted —
     // fence it and tell the model it is data, not instructions.
     final userMessage = '''
@@ -662,7 +671,7 @@ Give me your full diagnosis with health score and prioritised prescriptions.
       final batchMessage =
           'Batch ${i + 1}/${chunks.length}. List up to 3 CRITICAL issues only.\n'
           'Format each as: `[TYPE] file:line — reason (≤8 words)`\n\n'
-          '<crawled_data>\n${_formatIssues(chunks[i])}\n</crawled_data>';
+          '<crawled_data>\n${escapeCrawledDataFence(_formatIssues(chunks[i]))}\n</crawled_data>';
       try {
         final result = await _completeWithRetry(compactSystem, batchMessage);
         batchFindings.add(result.trim());
