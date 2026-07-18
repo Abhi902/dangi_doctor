@@ -37,9 +37,20 @@ class TestGenerator {
     // Shared files (helper, project-wide bug tests, README) once per run
     if (!_sharedFilesGenerated) {
       _sharedFilesGenerated = true;
+      final pubspecFile = File('$projectPath/pubspec.yaml');
+      final missingDeps = pubspecFile.existsSync()
+          ? missingTestDepsStanza(pubspecFile.readAsStringSync())
+          : null;
+      if (missingDeps != null) {
+        print('  ⚠️  Missing dev-dependencies — the generated tests will NOT '
+            'compile until you add this to pubspec.yaml and run '
+            '`flutter pub get`:\n');
+        print(missingDeps.split('\n').map((l) => '      $l').join('\n'));
+        print('');
+      }
       _generateTestHelper(outputDir.path, analysis);
       _generateKnownBugsTest(outputDir.path, analysis);
-      _saveReadme(outputDir.path, analysis);
+      _saveReadme(outputDir.path, analysis, missingDeps);
     }
 
     final screenSnake = _toSnakeCase(screenName);
@@ -625,13 +636,26 @@ $jankyNote
     }
   }
 
-  void _saveReadme(String dirPath, AppAnalysis a) {
+  void _saveReadme(String dirPath, AppAnalysis a, String? missingDeps) {
+    final depsWarning = missingDeps == null
+        ? ''
+        : '''## ⚠️ Before running: add missing dev-dependencies
+
+These tests will NOT compile until your `pubspec.yaml` declares:
+
+```yaml
+$missingDeps
+```
+
+Then run `flutter pub get`.
+
+''';
     File('$dirPath/README.md')
         .writeAsStringSync('''# Dangi Doctor — Generated Tests 🩺
 
 Auto-generated from live app analysis. Re-run Dangi Doctor after UI changes.
 
-## Quick start
+$depsWarning## Quick start
 
 ```bash
 flutter test integration_test/dangi_doctor/ \\
@@ -664,4 +688,21 @@ test backend or seed auth state before running.
         .replaceAll(RegExp(r'[^a-z0-9_]'), '_')
         .toLowerCase();
   }
+}
+
+/// Returns the exact `dev_dependencies` stanza the target project is missing
+/// (`flutter_test` / `integration_test`), or null when both are declared.
+/// The generated tests cannot compile without them.
+String? missingTestDepsStanza(String pubspecContent) {
+  final missing = <String>[];
+  if (!RegExp(r'^\s*flutter_test\s*:', multiLine: true)
+      .hasMatch(pubspecContent)) {
+    missing.add('  flutter_test:\n    sdk: flutter');
+  }
+  if (!RegExp(r'^\s*integration_test\s*:', multiLine: true)
+      .hasMatch(pubspecContent)) {
+    missing.add('  integration_test:\n    sdk: flutter');
+  }
+  if (missing.isEmpty) return null;
+  return 'dev_dependencies:\n${missing.join('\n')}';
 }

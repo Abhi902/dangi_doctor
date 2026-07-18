@@ -145,6 +145,18 @@ and `--no-ai` and Dangi Doctor never prompts; a crash exits non-zero.
 
 ### Run generated tests
 
+The generated tests require `flutter_test` and `integration_test` in your
+app's `dev_dependencies` — Dangi Doctor prints the exact stanza (and writes it
+into the generated README) when they are missing:
+
+```yaml
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+```
+
 ```bash
 flutter test integration_test/dangi_doctor/<screen>_smoke_test.dart \
   -d <device_id>

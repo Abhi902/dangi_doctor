@@ -201,4 +201,33 @@ void main() {
       expect(smoke, isNot(contains('const MyApp()')));
     });
   });
+
+  group('missing test dependencies (#15)', () {
+    test('missingTestDepsStanza reports both deps when neither is declared',
+        () {
+      final stanza = missingTestDepsStanza('name: app\n');
+      expect(stanza, isNotNull);
+      expect(stanza, contains('dev_dependencies:'));
+      expect(stanza, contains('flutter_test:'));
+      expect(stanza, contains('integration_test:'));
+    });
+
+    test('missingTestDepsStanza is null when both are present', () {
+      expect(missingTestDepsStanza('''
+name: app
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+'''), isNull);
+    });
+
+    test('generated README warns prominently about the missing stanza', () {
+      final readme = files['README.md']!;
+      expect(readme, contains('integration_test:'));
+      expect(readme, contains('flutter pub get'));
+      expect(readme, contains('will NOT compile'));
+    });
+  });
 }
