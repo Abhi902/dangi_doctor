@@ -325,14 +325,13 @@ $riskTests
 
       switch (risk.type) {
         case 'late_field_double_init':
-          final fieldEsc = risk.fieldName.replaceAll("'", "\\'");
-          final fieldName = risk.fieldName;
-          final callerMethod = risk.callerMethod;
+          final fieldEsc = dartEsc(risk.fieldName);
+          final methodEsc = dartEsc(risk.callerMethod);
           buffer.writeln(
             '\n'
             "    testWidgets(\n"
             "        'BUG: $fileLine — '\n"
-            "        'late field `$fieldName` double-init in `$callerMethod()`',\n"
+            "        'late field `$fieldEsc` double-init in `$methodEsc()`',\n"
             '        (tester) async {\n'
             '      await setupTest();\n'
             '      final errors = await pumpAppCollecting(tester, $runAppCall);\n'
@@ -396,11 +395,11 @@ $riskTests
           // pumpWidget grep — the old error-message match never fired.
           // Generate an honest always-failing test instead ("delete once
           // fixed"), same pattern as the leak test below.
-          final fieldName = risk.fieldName;
+          final fieldEsc = dartEsc(risk.fieldName);
           buffer.writeln(
             '\n'
             "    test(\n"
-            "        'BUG: $fileLine — side effect (`$fieldName`) inside build()',\n"
+            "        'BUG: $fileLine — side effect (`$fieldEsc`) inside build()',\n"
             '        () {\n'
             "      fail(\n"
             "        '━━━ BUILD SIDE EFFECT DETECTED ━━━\\n'\n"
@@ -420,11 +419,11 @@ $riskTests
         case 'stream_subscription_leak':
           // Leaks can't be caught via pumpWidget — generate a reminder test
           // that always fails so the developer must acknowledge the fix.
-          final fieldName = risk.fieldName;
+          final fieldEsc = dartEsc(risk.fieldName);
           buffer.writeln(
             '\n'
             "    test(\n"
-            "        'BUG: $fileLine — StreamSubscription `$fieldName` not cancelled in dispose()',\n"
+            "        'BUG: $fileLine — StreamSubscription `$fieldEsc` not cancelled in dispose()',\n"
             '        () {\n'
             "      fail(\n"
             "        '━━━ MEMORY LEAK DETECTED ━━━\\n'\n"

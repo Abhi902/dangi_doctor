@@ -76,7 +76,12 @@ void main() {
       final devices = await launcher.getDevices();
       expect(devices, isEmpty);
 
-      final pid = int.parse(File('${dir.path}/pid').readAsStringSync().trim());
+      final pidFile = File('${dir.path}/pid');
+      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      while (!pidFile.existsSync() && DateTime.now().isBefore(deadline)) {
+        await Future.delayed(const Duration(milliseconds: 50));
+      }
+      final pid = int.parse(pidFile.readAsStringSync().trim());
       // Give the kill a moment to land, then probe with `kill -0`.
       await Future.delayed(const Duration(milliseconds: 500));
       final alive = Process.runSync('kill', ['-0', '$pid']).exitCode == 0;
