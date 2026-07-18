@@ -213,7 +213,8 @@ void main(List<String> argv) async {
       }
     }
 
-    // Generate test scripts per screen
+    // Generate test scripts per screen — plumb each screen's REAL Phase-1/2
+    // performance capture into the perf-test emitter (#16).
     final generator = TestGenerator(projectPath: projectPath);
     for (final screen in screens) {
       await generator.generateAndSave(
@@ -221,6 +222,7 @@ void main(List<String> argv) async {
         widgetTree: screen.widgetTree,
         interactionResults: [],
         issues: screen.issues,
+        performance: screen.performance,
       );
     }
 

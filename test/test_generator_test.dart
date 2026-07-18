@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:test/test.dart';
 
 import 'package:dangi_doctor/analysis/tree_analyser.dart';
+import 'package:dangi_doctor/analysis/performance.dart';
 import 'package:dangi_doctor/generator/test_generator.dart';
 
 /// Builds a throwaway Flutter-project skeleton the generator can analyse.
@@ -228,6 +229,50 @@ dev_dependencies:
       expect(readme, contains('integration_test:'));
       expect(readme, contains('flutter pub get'));
       expect(readme, contains('will NOT compile'));
+    });
+  });
+
+  group('honest perf test (#16)', () {
+    test('emits a clearly-labeled skip when no crawl perf data exists', () {
+      final perf = files['home_screen_perf_test.dart']!;
+      expect(perf, contains('skip:'));
+      expect(perf, contains('No performance data was collected'));
+      expect(perf, isNot(contains('watchPerformance')));
+      expect(perf, isNot(contains("import 'package:flutter/material.dart';")));
+    });
+
+    test('asserts a frame-budget threshold when crawl data exists', () async {
+      final p = _fixtureProject(constApp: true);
+      addTearDown(() => p.deleteSync(recursive: true));
+      final generator = TestGenerator(projectPath: p.path);
+      await generator.generateAndSave(
+        screenName: 'HomeScreen',
+        widgetTree: {},
+        interactionResults: [],
+        issues: [
+          WidgetIssue(
+              type: 'deep_nesting',
+              message: 'test issue',
+              severity: 'info',
+              file: 'home_screen.dart',
+              line: 1),
+        ],
+        performance: ScreenPerformance(
+          screenName: 'HomeScreen',
+          frames: [
+            FrameData(buildMs: 5.0, rasterMs: 3.0),
+            FrameData(buildMs: 20.0, rasterMs: 3.0),
+          ],
+          memoryKb: 0,
+        ),
+      );
+      final perf = File(
+              '${p.path}/integration_test/dangi_doctor/home_screen_perf_test.dart')
+          .readAsStringSync();
+      expect(perf, contains('watchPerformance'));
+      expect(perf, contains('average_frame_build_time_millis'));
+      expect(perf, contains('lessThan(16.0)')); // default frameBudgetMs
+      expect(perf, contains('Crawl baseline'));
     });
   });
 }
