@@ -389,35 +389,27 @@ $riskTests
           );
 
         case 'build_side_effects':
+          // A side effect inside build() cannot be reliably provoked from a
+          // pumpWidget grep — the old error-message match never fired.
+          // Generate an honest always-failing test instead ("delete once
+          // fixed"), same pattern as the leak test below.
           final fieldName = risk.fieldName;
-          final errorFragment = fieldName == 'setState'
-              ? 'setState() or markNeedsBuild() called during build'
-              : 'build() must be synchronous';
           buffer.writeln(
             '\n'
-            "    testWidgets(\n"
+            "    test(\n"
             "        'BUG: $fileLine — side effect (`$fieldName`) inside build()',\n"
-            '        (tester) async {\n'
-            '      await setupTest();\n'
-            '      final errors = await pumpAppCollecting(tester, $runAppCall);\n'
-            '\n'
-            '      final matching = errors.where((e) {\n'
-            '        final msg = e.exception.toString();\n'
-            "        return msg.contains('$errorFragment');\n"
-            '      }).toList();\n'
-            '\n'
-            '      expect(\n'
-            '        matching,\n'
-            '        isEmpty,\n'
-            "        reason: '━━━ BUG DETECTED ━━━\\n'\n"
-            "            'File: $fileLine\\n'\n"
-            "            '\\n'\n"
-            "            'Problem:\\n'\n"
-            "            '$descEsc\\n'\n"
-            "            '\\n'\n"
-            "            'Fix:\\n'\n"
-            "            '$fixEsc\\n'\n"
-            "            '━━━━━━━━━━━━━━━━━━━',\n"
+            '        () {\n'
+            "      fail(\n"
+            "        '━━━ BUILD SIDE EFFECT DETECTED ━━━\\n'\n"
+            "        'File: $fileLine\\n'\n"
+            "        '\\n'\n"
+            "        'Problem:\\n'\n"
+            "        '$descEsc\\n'\n"
+            "        '\\n'\n"
+            "        'Fix:\\n'\n"
+            "        '$fixEsc\\n'\n"
+            "        '━━━━━━━━━━━━━━━━━━━\\n'\n"
+            "        'Delete this test once the fix is applied.',\n"
             '      );\n'
             '    });\n',
           );

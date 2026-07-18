@@ -90,6 +90,28 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 ''');
+
+  // setState() called directly inside build() — the build_side_effects
+  // detector must produce an honest always-failing test, not a dead grep.
+  File('${dir.path}/lib/pages/counter_box.dart').writeAsStringSync('''
+import 'package:flutter/material.dart';
+
+class CounterBox extends StatefulWidget {
+  const CounterBox({super.key});
+  @override
+  State<CounterBox> createState() => _CounterBoxState();
+}
+
+class _CounterBoxState extends State<CounterBox> {
+  int n = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    setState(() => n++);
+    return Text('count \$n');
+  }
+}
+''');
   return dir;
 }
 
@@ -273,6 +295,19 @@ dev_dependencies:
       expect(perf, contains('average_frame_build_time_millis'));
       expect(perf, contains('lessThan(16.0)')); // default frameBudgetMs
       expect(perf, contains('Crawl baseline'));
+    });
+  });
+
+  group('build_side_effects honest test (#17)', () {
+    test('generates an always-failing test instead of a dead error grep', () {
+      final bugs = files['known_bugs_test.dart']!;
+      expect(bugs, contains('BUILD SIDE EFFECT DETECTED'));
+      expect(bugs, contains('counter_box.dart'));
+      expect(bugs, contains('Delete this test once the fix is applied.'));
+      expect(
+          bugs,
+          isNot(contains(
+              "msg.contains('setState() or markNeedsBuild() called during build')")));
     });
   });
 }
