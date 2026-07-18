@@ -171,6 +171,43 @@ void main() {
       expect(text, 'gemini report');
     });
 
+    test('concatenates ALL text parts and skips thought parts', () {
+      final text = extractGeminiText({
+        'candidates': [
+          {
+            'content': {
+              'parts': [
+                {'text': 'internal reasoning...', 'thought': true},
+                {'text': 'first half '},
+                {'text': 'second half'},
+              ]
+            },
+            'finishReason': 'STOP',
+          }
+        ]
+      });
+      expect(text, 'first half second half');
+    });
+
+    test('surfaces partial text with a truncation note on MAX_TOKENS', () {
+      final text = extractGeminiText({
+        'candidates': [
+          {
+            'content': {
+              'parts': [
+                {'text': 'thinking that ate the budget', 'thought': true},
+                {'text': 'partial answer'},
+              ]
+            },
+            'finishReason': 'MAX_TOKENS',
+          }
+        ]
+      });
+      expect(text, contains('partial answer'));
+      expect(text, isNot(contains('thinking that ate')));
+      expect(text.toLowerCase(), contains('truncated'));
+    });
+
     test('throws a clear error when candidates are empty (safety block)', () {
       expect(
           () => extractGeminiText({
@@ -179,6 +216,18 @@ void main() {
               }),
           throwsA(isA<FormatException>()
               .having((e) => e.message, 'message', contains('SAFETY'))));
+    });
+  });
+
+  group('buildGeminiGenerationConfig', () {
+    test('budgets output tokens ON TOP of an explicit thinking budget', () {
+      final config = buildGeminiGenerationConfig(maxTokens: 4096);
+      final thinking = config['thinkingConfig'] as Map;
+      final budget = thinking['thinkingBudget'] as int;
+      expect(budget, greaterThanOrEqualTo(128),
+          reason: 'gemini-2.5-pro rejects budgets below 128');
+      expect(config['maxOutputTokens'], 4096 + budget,
+          reason: 'reasoning tokens must never consume the answer budget');
     });
   });
 }

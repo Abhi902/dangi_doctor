@@ -117,7 +117,9 @@ String extractOpenAiText(Map<String, dynamic> json) {
 
 /// Extract the answer from a Gemini generateContent response. Candidates can
 /// be empty when the safety filter blocks the prompt — a real risk given
-/// crawled app text rides in the prompt.
+/// crawled app text rides in the prompt. Concatenates ALL text parts (Gemini
+/// splits long answers) and skips `thought: true` reasoning parts. Partial
+/// output on MAX_TOKENS is surfaced with a truncation note, not thrown away.
 String extractGeminiText(Map<String, dynamic> json) {
   final candidates = json['candidates'];
   if (candidates is! List || candidates.isEmpty) {
@@ -127,14 +129,34 @@ String extractGeminiText(Map<String, dynamic> json) {
   }
   final first = candidates.first as Map;
   final parts = (first['content'] as Map?)?['parts'];
-  final text = parts is List && parts.isNotEmpty
-      ? (parts.first as Map)['text'] as String?
-      : null;
-  if (text == null || text.isEmpty) {
-    throw FormatException(
-        'Gemini returned no text (finishReason: ${first['finishReason']}).');
+  final buffer = StringBuffer();
+  if (parts is List) {
+    for (final part in parts) {
+      if (part is Map && part['thought'] != true) {
+        buffer.write(part['text'] as String? ?? '');
+      }
+    }
+  }
+  final text = buffer.toString();
+  if (text.isEmpty) {
+    final finish = first['finishReason'];
+    throw FormatException(finish == 'MAX_TOKENS'
+        ? 'Gemini spent the whole output budget on reasoning before any '
+            'answer text (finishReason: MAX_TOKENS) — raise DANGI_MAX_TOKENS.'
+        : 'Gemini returned no text (finishReason: $finish).');
   }
   return first['finishReason'] == 'MAX_TOKENS' ? '$text$_truncationNote' : text;
+}
+
+/// Gemini generationConfig: cap thinking explicitly and grant the output
+/// budget ON TOP of it, so gemini-2.5's reasoning tokens can never consume
+/// the answer's token budget (the cause of empty MAX_TOKENS responses).
+Map<String, dynamic> buildGeminiGenerationConfig({required int maxTokens}) {
+  const thinkingBudget = 2048; // valid range for gemini-2.5-pro: 128-32768
+  return {
+    'maxOutputTokens': maxTokens + thinkingBudget,
+    'thinkingConfig': {'thinkingBudget': thinkingBudget},
+  };
 }
 
 // ─── Base interface ────────────────────────────────────────────────────────────
@@ -320,7 +342,8 @@ class GeminiProvider implements AiProvider {
             ]
           }
         ],
-        'generationConfig': {'maxOutputTokens': ModelConfig.maxTokens},
+        'generationConfig':
+            buildGeminiGenerationConfig(maxTokens: ModelConfig.maxTokens),
       },
     );
     return extractGeminiText(jsonDecode(response.body) as Map<String, dynamic>);
