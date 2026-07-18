@@ -68,6 +68,27 @@ int? parseRetryAfterSeconds({required String? header, required String body}) {
   return null;
 }
 
+/// Hard cap on a single retry sleep. A server demanding more than this fails
+/// the screen instead — the pipeline's per-screen isolation keeps the run
+/// alive, whereas a multi-minute sleep would silently stall the whole crawl.
+const int kMaxRetryAfterSeconds = 60;
+
+/// Seconds to sleep before retrying [attempt] (1-based). The server's
+/// Retry-After wins when present (plus a 2s cushion); otherwise exponential
+/// backoff plus [jitter]. Returns null when Retry-After exceeds
+/// [kMaxRetryAfterSeconds] — the caller must give up rather than sleep.
+int? computeRetryDelaySeconds({
+  required int attempt,
+  required int? retryAfterSeconds,
+  required int jitter,
+}) {
+  if (retryAfterSeconds != null) {
+    if (retryAfterSeconds > kMaxRetryAfterSeconds) return null;
+    return retryAfterSeconds + 2;
+  }
+  return pow(2, attempt).toInt() * 2 + jitter + 2;
+}
+
 const _truncationNote =
     '\n\n⚠️  [Report truncated — the model hit its output token limit.]';
 
@@ -721,15 +742,30 @@ ${interactionReport.isNotEmpty ? interactionReport : ''}''';
         if (e.isTokenLimit || !e.isRetryable || attempt >= maxAttempts) {
           rethrow;
         }
-        final waitSecs = e.retryAfterSeconds ??
-            (pow(2, attempt).toInt() * 2 + _random.nextInt(3));
+        final waitSecs = computeRetryDelaySeconds(
+          attempt: attempt,
+          retryAfterSeconds: e.retryAfterSeconds,
+          jitter: _random.nextInt(3),
+        );
+        if (waitSecs == null) {
+          print('  ⛔ Server asked to retry after ${e.retryAfterSeconds}s '
+              '(cap: ${kMaxRetryAfterSeconds}s) — failing this screen.');
+          rethrow;
+        }
         print('  ⏳ ${e.isRateLimit ? 'Rate limited' : 'Server error '
                 '(${e.statusCode})'} — retry ${attempt + 1}/$maxAttempts '
-            'in ${waitSecs + 2}s...');
-        await Future.delayed(Duration(seconds: waitSecs + 2));
+            'in ${waitSecs}s...');
+        await Future.delayed(Duration(seconds: waitSecs));
       } on TimeoutException {
         if (attempt >= maxAttempts) rethrow;
-        print('  ⏳ Request timed out — retry ${attempt + 1}/$maxAttempts...');
+        final waitSecs = computeRetryDelaySeconds(
+          attempt: attempt,
+          retryAfterSeconds: null,
+          jitter: _random.nextInt(3),
+        )!;
+        print('  ⏳ Request timed out — retry ${attempt + 1}/$maxAttempts '
+            'in ${waitSecs}s...');
+        await Future.delayed(Duration(seconds: waitSecs));
       }
     }
   }

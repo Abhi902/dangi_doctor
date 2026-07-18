@@ -89,6 +89,43 @@ void main() {
     });
   });
 
+  group('computeRetryDelaySeconds', () {
+    test('honours the server Retry-After up to the 60s cap (+2s cushion)', () {
+      expect(
+          computeRetryDelaySeconds(
+              attempt: 1, retryAfterSeconds: 30, jitter: 0),
+          32);
+      expect(
+          computeRetryDelaySeconds(
+              attempt: 1, retryAfterSeconds: 60, jitter: 0),
+          62);
+    });
+
+    test('returns null beyond the cap so the caller fails the screen', () {
+      expect(
+          computeRetryDelaySeconds(
+              attempt: 1, retryAfterSeconds: 61, jitter: 0),
+          isNull);
+      expect(
+          computeRetryDelaySeconds(
+              attempt: 2, retryAfterSeconds: 3600, jitter: 2),
+          isNull);
+    });
+
+    test('falls back to exponential backoff with jitter when no Retry-After',
+        () {
+      // attempt 1: 2^1*2 + jitter + 2 = 6;  attempt 2: 2^2*2 + jitter + 2 = 11
+      expect(
+          computeRetryDelaySeconds(
+              attempt: 1, retryAfterSeconds: null, jitter: 0),
+          6);
+      expect(
+          computeRetryDelaySeconds(
+              attempt: 2, retryAfterSeconds: null, jitter: 1),
+          11);
+    });
+  });
+
   group('extractClaudeText', () {
     test('returns the first text block', () {
       final text = extractClaudeText({
