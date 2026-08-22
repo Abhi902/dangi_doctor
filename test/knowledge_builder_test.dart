@@ -71,6 +71,30 @@ void main() {
     });
   });
 
+  group('renderLayer1FileOrNull', () {
+    test('returns null when any section is missing — caller must not write',
+        () {
+      expect(
+          renderLayer1FileOrNull({'changelog': 'real content', 'testing': ''}),
+          isNull);
+      expect(
+          renderLayer1FileOrNull(
+              {'changelog': 'real content', 'testing': '(unavailable)'}),
+          isNull);
+    });
+
+    test('returns the generated file when every section has content', () {
+      final file = renderLayer1FileOrNull({
+        'changelog': 'CHANGELOG BODY',
+        'testing': 'TESTING BODY',
+      });
+      expect(file, isNotNull);
+      expect(file, contains('const String kLayer1Content'));
+      expect(file, contains('CHANGELOG BODY'));
+      expect(file, contains('AUTO-GENERATED'));
+    });
+  });
+
   group('generateDartConst', () {
     test('is deterministic — no timestamps, same input same output', () {
       final a =

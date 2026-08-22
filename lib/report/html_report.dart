@@ -12,13 +12,15 @@ class HtmlReportGenerator {
     required List<KnownRisk> knownRisks,
     required String projectPath,
     required String projectName,
+    bool openInBrowser = true,
   }) async {
     final timestamp = DateTime.now();
     final ts = '${timestamp.year}'
         '${timestamp.month.toString().padLeft(2, '0')}'
         '${timestamp.day.toString().padLeft(2, '0')}_'
         '${timestamp.hour.toString().padLeft(2, '0')}'
-        '${timestamp.minute.toString().padLeft(2, '0')}';
+        '${timestamp.minute.toString().padLeft(2, '0')}'
+        '${timestamp.second.toString().padLeft(2, '0')}';
 
     final outDir = Directory('$projectPath/.dangi_doctor');
     if (!outDir.existsSync()) outDir.createSync(recursive: true);
@@ -35,15 +37,19 @@ class HtmlReportGenerator {
     print('\n📊 Report saved: $outPath');
 
     // Auto-open
-    try {
-      if (Platform.isMacOS) {
-        await Process.run('open', [outPath]);
-      } else if (Platform.isLinux) {
-        await Process.run('xdg-open', [outPath]);
-      } else if (Platform.isWindows) {
-        await Process.run('start', [outPath], runInShell: true);
-      }
-    } catch (_) {}
+    if (openInBrowser) {
+      try {
+        if (Platform.isMacOS) {
+          await Process.run('open', [outPath]);
+        } else if (Platform.isLinux) {
+          await Process.run('xdg-open', [outPath]);
+        } else if (Platform.isWindows) {
+          // `start` is a cmd built-in; the empty "" is the window-title
+          // argument so the path is not consumed as the title.
+          await Process.run('cmd', ['/c', 'start', '', outPath]);
+        }
+      } catch (_) {}
+    }
 
     return outPath;
   }
@@ -89,7 +95,8 @@ class HtmlReportGenerator {
       .replaceAll('&', '&amp;')
       .replaceAll('<', '&lt;')
       .replaceAll('>', '&gt;')
-      .replaceAll('"', '&quot;');
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
 
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -128,7 +135,7 @@ class HtmlReportGenerator {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dangi Doctor Report — $projectName</title>
+<title>Dangi Doctor Report — ${_esc(projectName)}</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -261,7 +268,7 @@ class HtmlReportGenerator {
 <div class="header">
   <div class="header-left">
     <h1>🩺 Dangi Doctor</h1>
-    <div class="subtitle">Flutter App Health Report &nbsp;·&nbsp; $projectName</div>
+    <div class="subtitle">Flutter App Health Report &nbsp;·&nbsp; ${_esc(projectName)}</div>
   </div>
   <div class="header-right">
     <div class="gauge-wrap">

@@ -246,6 +246,20 @@ class PerformanceCapture {
     );
   }
 
+  /// End a capture WITHOUT producing a result: cancel the Flutter.Frame
+  /// subscription, discard buffered frames, and turn VM timeline recording
+  /// back off. Safe to call when no recording was started, and safe to call
+  /// more than once. Used by crawl paths that started a capture but found
+  /// nothing worth analysing (non-navigating tap, already-known screen,
+  /// failed route injection) — see ScreenNavigator.
+  Future<void> abandon() async {
+    _frameEvents.clear();
+    await _stopListening();
+    try {
+      await vmService.setVMTimelineFlags([]);
+    } catch (_) {}
+  }
+
   Future<void> _stopListening() async {
     await _subscription?.cancel();
     _subscription = null;

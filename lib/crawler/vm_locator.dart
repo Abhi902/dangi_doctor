@@ -1,4 +1,20 @@
+import 'dart:convert';
 import 'dart:io';
+
+/// True when [body] is a Dart VM service `getVersion` JSON-RPC response.
+/// The VM service answers RPCs over HTTP GET at `/<method>`, so probing
+/// `<base>/getVersion` and checking the body distinguishes a real Dart VM
+/// from any other server that happens to answer 200 on ports 8181-8183.
+bool isDartVmVersionResponse(String body) {
+  try {
+    final decoded = jsonDecode(body);
+    if (decoded is! Map<String, dynamic>) return false;
+    final result = decoded['result'];
+    return result is Map<String, dynamic> && result['type'] == 'Version';
+  } catch (_) {
+    return false;
+  }
+}
 
 class VmServiceLocator {
   static Future<String?> discover({String? projectPath}) async {
@@ -45,17 +61,26 @@ class VmServiceLocator {
   }
 
   static Future<bool> _isAliveWs(String wsUrl) async {
+    final client = HttpClient();
     try {
       final httpBase = wsUrl
           .replaceFirst('ws://', 'http://')
           .replaceAll(RegExp(r'/ws$'), '');
-      final req = await HttpClient()
-          .getUrl(Uri.parse(httpBase))
+      // Any auth-token path segment is preserved: http://host:port/TOKEN=/getVersion.
+      final req = await client
+          .getUrl(Uri.parse('$httpBase/getVersion'))
           .timeout(const Duration(milliseconds: 800));
       final res = await req.close().timeout(const Duration(milliseconds: 800));
-      return res.statusCode == 200;
+      // Drain the response fully — the body doubles as the VM check.
+      final body = await res
+          .transform(utf8.decoder)
+          .join()
+          .timeout(const Duration(milliseconds: 800));
+      return res.statusCode == 200 && isDartVmVersionResponse(body);
     } catch (_) {
       return false;
+    } finally {
+      client.close(force: true);
     }
   }
 

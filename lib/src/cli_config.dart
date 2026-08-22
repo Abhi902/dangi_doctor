@@ -10,6 +10,7 @@ class CliConfig {
   final bool showHelp;
   final bool showVersion;
   final bool noAi;
+  final bool rescan;
   final String? project;
   final String? vmUrl;
   final String? device;
@@ -18,6 +19,7 @@ class CliConfig {
     this.showHelp = false,
     this.showVersion = false,
     this.noAi = false,
+    this.rescan = false,
     this.project,
     this.vmUrl,
     this.device,
@@ -30,6 +32,10 @@ ArgParser _buildParser() => ArgParser()
   ..addFlag('no-ai',
       negatable: false,
       help: 'Skip AI diagnosis (crawler + static analysis only).')
+  ..addFlag('rescan',
+      negatable: false,
+      help: 'Delete the cached project fingerprint '
+          '(.dangi_doctor/project.json) and rescan the project.')
   ..addOption('project',
       help: 'Path to the Flutter project (defaults to DANGI_PROJECT or cwd).')
   ..addOption('vm-url',
@@ -38,13 +44,18 @@ ArgParser _buildParser() => ArgParser()
 
 String usage() => 'Usage: dangi_doctor [options]\n\n${_buildParser().usage}';
 
-/// Throws [FormatException] on unknown flags/options.
+/// Throws [FormatException] on unknown flags/options and positional args.
 CliConfig parseCliArgs(List<String> argv) {
   final results = _buildParser().parse(argv);
+  if (results.rest.isNotEmpty) {
+    throw FormatException(
+        'Unexpected positional argument(s): ${results.rest.join(' ')}');
+  }
   return CliConfig(
     showHelp: results['help'] as bool,
     showVersion: results['version'] as bool,
     noAi: results['no-ai'] as bool,
+    rescan: results['rescan'] as bool,
     project: results['project'] as String?,
     vmUrl: results['vm-url'] as String?,
     device: results['device'] as String?,

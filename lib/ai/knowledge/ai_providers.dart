@@ -68,8 +68,38 @@ int? parseRetryAfterSeconds({required String? header, required String body}) {
   return null;
 }
 
+/// Hard cap on a single retry sleep. A server demanding more than this fails
+/// the screen instead — the pipeline's per-screen isolation keeps the run
+/// alive, whereas a multi-minute sleep would silently stall the whole crawl.
+const int kMaxRetryAfterSeconds = 60;
+
+/// Seconds to sleep before retrying [attempt] (1-based). The server's
+/// Retry-After wins when present (plus a 2s cushion); otherwise exponential
+/// backoff plus [jitter]. Returns null when Retry-After exceeds
+/// [kMaxRetryAfterSeconds] — the caller must give up rather than sleep.
+int? computeRetryDelaySeconds({
+  required int attempt,
+  required int? retryAfterSeconds,
+  required int jitter,
+}) {
+  if (retryAfterSeconds != null) {
+    if (retryAfterSeconds > kMaxRetryAfterSeconds) return null;
+    return retryAfterSeconds + 2;
+  }
+  return pow(2, attempt).toInt() * 2 + jitter + 2;
+}
+
 const _truncationNote =
     '\n\n⚠️  [Report truncated — the model hit its output token limit.]';
+
+/// Crawled app text is interpolated inside a `<crawled_data>` fence in the
+/// prompt. A literal closing tag inside that text would terminate the fence
+/// early and let crawled content masquerade as instructions to the model —
+/// entity-escape the tag (open or close, any case) before interpolation.
+String escapeCrawledDataFence(String text) => text.replaceAllMapped(
+      RegExp(r'</?crawled_data>', caseSensitive: false),
+      (m) => m.group(0)!.replaceAll('<', '&lt;').replaceAll('>', '&gt;'),
+    );
 
 /// Extract the answer text from an Anthropic Messages API response.
 /// Guards the non-happy paths: refusals, empty content, truncation.
@@ -78,12 +108,14 @@ String extractClaudeText(Map<String, dynamic> json) {
   final content = json['content'];
   String? text;
   if (content is List) {
+    final blocks = <String>[];
     for (final block in content) {
       if (block is Map && block['type'] == 'text') {
-        text = block['text'] as String?;
-        if (text != null && text.isNotEmpty) break;
+        final blockText = block['text'] as String?;
+        if (blockText != null && blockText.isNotEmpty) blocks.add(blockText);
       }
     }
+    if (blocks.isNotEmpty) text = blocks.join('\n');
   }
   if (text == null || text.isEmpty) {
     if (stopReason == 'refusal') {
@@ -115,7 +147,9 @@ String extractOpenAiText(Map<String, dynamic> json) {
 
 /// Extract the answer from a Gemini generateContent response. Candidates can
 /// be empty when the safety filter blocks the prompt — a real risk given
-/// crawled app text rides in the prompt.
+/// crawled app text rides in the prompt. Concatenates ALL text parts (Gemini
+/// splits long answers) and skips `thought: true` reasoning parts. Partial
+/// output on MAX_TOKENS is surfaced with a truncation note, not thrown away.
 String extractGeminiText(Map<String, dynamic> json) {
   final candidates = json['candidates'];
   if (candidates is! List || candidates.isEmpty) {
@@ -125,14 +159,34 @@ String extractGeminiText(Map<String, dynamic> json) {
   }
   final first = candidates.first as Map;
   final parts = (first['content'] as Map?)?['parts'];
-  final text = parts is List && parts.isNotEmpty
-      ? (parts.first as Map)['text'] as String?
-      : null;
-  if (text == null || text.isEmpty) {
-    throw FormatException(
-        'Gemini returned no text (finishReason: ${first['finishReason']}).');
+  final buffer = StringBuffer();
+  if (parts is List) {
+    for (final part in parts) {
+      if (part is Map && part['thought'] != true) {
+        buffer.write(part['text'] as String? ?? '');
+      }
+    }
+  }
+  final text = buffer.toString();
+  if (text.isEmpty) {
+    final finish = first['finishReason'];
+    throw FormatException(finish == 'MAX_TOKENS'
+        ? 'Gemini spent the whole output budget on reasoning before any '
+            'answer text (finishReason: MAX_TOKENS) — raise DANGI_MAX_TOKENS.'
+        : 'Gemini returned no text (finishReason: $finish).');
   }
   return first['finishReason'] == 'MAX_TOKENS' ? '$text$_truncationNote' : text;
+}
+
+/// Gemini generationConfig: cap thinking explicitly and grant the output
+/// budget ON TOP of it, so gemini-2.5's reasoning tokens can never consume
+/// the answer's token budget (the cause of empty MAX_TOKENS responses).
+Map<String, dynamic> buildGeminiGenerationConfig({required int maxTokens}) {
+  const thinkingBudget = 2048; // valid range for gemini-2.5-pro: 128-32768
+  return {
+    'maxOutputTokens': maxTokens + thinkingBudget,
+    'thinkingConfig': {'thinkingBudget': thinkingBudget},
+  };
 }
 
 // ─── Base interface ────────────────────────────────────────────────────────────
@@ -148,13 +202,15 @@ class ModelConfig {
   static String get claude =>
       Platform.environment['DANGI_CLAUDE_MODEL'] ?? 'claude-opus-4-8';
   static String get openai =>
-      Platform.environment['DANGI_OPENAI_MODEL'] ?? 'gpt-4o';
+      Platform.environment['DANGI_OPENAI_MODEL'] ?? 'gpt-5.5';
   static String get gemini =>
       Platform.environment['DANGI_GEMINI_MODEL'] ?? 'gemini-2.5-pro';
   static String get groq =>
-      Platform.environment['DANGI_GROQ_MODEL'] ?? 'llama-3.1-8b-instant';
+      // llama-3.1-8b-instant was deprecated by Groq on 2026-06-17;
+      // openai/gpt-oss-20b is Groq's documented migration target.
+      Platform.environment['DANGI_GROQ_MODEL'] ?? 'openai/gpt-oss-20b';
   static String get ollama =>
-      Platform.environment['DANGI_OLLAMA_MODEL'] ?? 'llama3.1';
+      Platform.environment['DANGI_OLLAMA_MODEL'] ?? 'gpt-oss:20b';
   static String get ollamaUrl =>
       Platform.environment['DANGI_OLLAMA_URL'] ?? 'http://localhost:11434';
   static int get maxTokens =>
@@ -221,6 +277,25 @@ class ClaudeProvider implements AiProvider {
 
 // ─── OpenAI-compatible (OpenAI, Groq) ────────────────────────────────────────
 
+/// Request body for the OpenAI-compatible chat-completions dialect.
+/// Uses `max_completion_tokens`: OpenAI's current (reasoning-era) models
+/// reject the legacy `max_tokens`, while both OpenAI and Groq accept the new
+/// name for every model — so DANGI_OPENAI_MODEL overrides keep working.
+Map<String, dynamic> buildOpenAiChatBody({
+  required String model,
+  required int maxTokens,
+  required String systemPrompt,
+  required String userMessage,
+}) =>
+    {
+      'model': model,
+      'max_completion_tokens': maxTokens,
+      'messages': [
+        {'role': 'system', 'content': systemPrompt},
+        {'role': 'user', 'content': userMessage},
+      ],
+    };
+
 /// OpenAI and Groq speak the same chat-completions dialect — one
 /// implementation, two configurations.
 class OpenAiCompatibleProvider implements AiProvider {
@@ -248,14 +323,12 @@ class OpenAiCompatibleProvider implements AiProvider {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $apiKey',
       },
-      {
-        'model': model,
-        'max_tokens': ModelConfig.maxTokens,
-        'messages': [
-          {'role': 'system', 'content': systemPrompt},
-          {'role': 'user', 'content': userMessage},
-        ],
-      },
+      buildOpenAiChatBody(
+        model: model,
+        maxTokens: ModelConfig.maxTokens,
+        systemPrompt: systemPrompt,
+        userMessage: userMessage,
+      ),
     );
     return extractOpenAiText(jsonDecode(response.body) as Map<String, dynamic>);
   }
@@ -318,7 +391,8 @@ class GeminiProvider implements AiProvider {
             ]
           }
         ],
-        'generationConfig': {'maxOutputTokens': ModelConfig.maxTokens},
+        'generationConfig':
+            buildGeminiGenerationConfig(maxTokens: ModelConfig.maxTokens),
       },
     );
     return extractGeminiText(jsonDecode(response.body) as Map<String, dynamic>);
@@ -524,7 +598,7 @@ class AiClient {
 
     final systemPrompt = await _system();
 
-    final screenContext = _buildScreenContext(
+    final screenContext = escapeCrawledDataFence(_buildScreenContext(
       screenName: screenName,
       totalWidgets: totalWidgets,
       maxDepth: maxDepth,
@@ -535,9 +609,9 @@ class AiClient {
       jankyFrames: jankyFrames,
       totalFrames: totalFrames,
       interactionReport: interactionReport,
-    );
+    ));
 
-    final issueText = _formatIssues(issues);
+    final issueText = escapeCrawledDataFence(_formatIssues(issues));
     // Crawled content (screen names, widget labels, messages) is untrusted —
     // fence it and tell the model it is data, not instructions.
     final userMessage = '''
@@ -597,7 +671,7 @@ Give me your full diagnosis with health score and prioritised prescriptions.
       final batchMessage =
           'Batch ${i + 1}/${chunks.length}. List up to 3 CRITICAL issues only.\n'
           'Format each as: `[TYPE] file:line — reason (≤8 words)`\n\n'
-          '<crawled_data>\n${_formatIssues(chunks[i])}\n</crawled_data>';
+          '<crawled_data>\n${escapeCrawledDataFence(_formatIssues(chunks[i]))}\n</crawled_data>';
       try {
         final result = await _completeWithRetry(compactSystem, batchMessage);
         batchFindings.add(result.trim());
@@ -677,15 +751,30 @@ ${interactionReport.isNotEmpty ? interactionReport : ''}''';
         if (e.isTokenLimit || !e.isRetryable || attempt >= maxAttempts) {
           rethrow;
         }
-        final waitSecs = e.retryAfterSeconds ??
-            (pow(2, attempt).toInt() * 2 + _random.nextInt(3));
+        final waitSecs = computeRetryDelaySeconds(
+          attempt: attempt,
+          retryAfterSeconds: e.retryAfterSeconds,
+          jitter: _random.nextInt(3),
+        );
+        if (waitSecs == null) {
+          print('  ⛔ Server asked to retry after ${e.retryAfterSeconds}s '
+              '(cap: ${kMaxRetryAfterSeconds}s) — failing this screen.');
+          rethrow;
+        }
         print('  ⏳ ${e.isRateLimit ? 'Rate limited' : 'Server error '
                 '(${e.statusCode})'} — retry ${attempt + 1}/$maxAttempts '
-            'in ${waitSecs + 2}s...');
-        await Future.delayed(Duration(seconds: waitSecs + 2));
+            'in ${waitSecs}s...');
+        await Future.delayed(Duration(seconds: waitSecs));
       } on TimeoutException {
         if (attempt >= maxAttempts) rethrow;
-        print('  ⏳ Request timed out — retry ${attempt + 1}/$maxAttempts...');
+        final waitSecs = computeRetryDelaySeconds(
+          attempt: attempt,
+          retryAfterSeconds: null,
+          jitter: _random.nextInt(3),
+        )!;
+        print('  ⏳ Request timed out — retry ${attempt + 1}/$maxAttempts '
+            'in ${waitSecs}s...');
+        await Future.delayed(Duration(seconds: waitSecs));
       }
     }
   }

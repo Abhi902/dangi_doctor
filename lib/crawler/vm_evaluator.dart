@@ -1,6 +1,12 @@
 import 'dart:async';
 import 'package:vm_service/vm_service.dart';
 
+/// Escape a string for safe interpolation inside a single-quoted Dart
+/// expression literal. Backslash must be escaped first, otherwise the
+/// backslashes added for `$` and `'` would themselves be doubled.
+String dartLiteral(String s) =>
+    s.replaceAll(r'\', r'\\').replaceAll(r'$', r'\$').replaceAll("'", r"\'");
+
 /// Navigates the running Flutter app to named routes by evaluating Dart
 /// expressions directly inside the app's isolate via the VM service.
 ///
@@ -245,8 +251,8 @@ class VmEvaluator {
     // Route strings are interpolated into Dart source below — escape quotes,
     // backslashes and $ so a route like `/x'y` or `/user/$id` can't break the
     // expression (or inject one).
-    final absPath = _dartLiteral(route.startsWith('/') ? route : '/$route');
-    final nameLit = _dartLiteral(route);
+    final absPath = dartLiteral(route.startsWith('/') ? route : '/$route');
+    final nameLit = dartLiteral(route);
     final v = _firstNav;
     _firstNav = false;
 
@@ -332,11 +338,6 @@ class VmEvaluator {
 
     return false;
   }
-
-  /// Escape a string for safe interpolation inside a single-quoted Dart
-  /// expression literal.
-  static String _dartLiteral(String s) =>
-      s.replaceAll(r'\', r'\\').replaceAll(r'$', r'\$').replaceAll("'", r"\'");
 
   // ───────────────────────────────────────────────────────────────────────────
   // Evaluate helper
