@@ -127,6 +127,20 @@ PERFORMANCE RULES (from flutter.dev/perf):
 
 ━━━ FLUTTER VERSION HISTORY ━━━
 
+─── Flutter 3.47 ───────────────────────────
+## Flutter 3.47 Changes
+
+### [3.47.1](https://github.com/flutter/flutter/releases/tag/3.47.1)
+- [flutter/190871](https://github.com/flutter/flutter/issues/190871) Flutter GPU could not be enabled in release builds on Linux and Windows, since those embedders had no project-level opt-in and release builds ignore engine switches from the environment.
+- [flutter/188446](https://github.com/flutter/flutter/issues/188446) When building multi-target applications in parallel on iOS and macOS, a race condition in SwiftPM integration causes `FileSystemException`.
+- [flutter/189550](https://github.com/flutter/flutter/issues/189550) When running `flutter pub get` in a Dart workspace, platform tooling regeneration and analysis options migration are skipped for packages that do not depend on Flutter.
+- [flutter/190234](https://github.com/flutter/flutter/issues/190234) Avoid crashing with `PathNotFoundException` when cleaning up native assets if files are removed concurrently.
+- [flutter/189128](https://github.com/flutter/flutter/issues/189128) Invalidate `WebEntrypointTarget` and regenerate `web_plugin_registrant.dart` when web plugins are added or removed.
+- [flutter/186445](https://github.com/flutter/flutter/issues/186445) Fix hot restart for WASM web builds.
+- [flutter/190284](https://github.com/flutter/flutter/issues/190284) Fix hot reload failing to reload edits in nested Pub workspace member packages located under root `lib/`.
+- [flutter/191056](https://github.com/flutter/flutter/issu
+  ...(more fixes not shown)
+
 ─── Flutter 3.44 ───────────────────────────
 ## Flutter 3.44 Changes
 
@@ -211,27 +225,6 @@ PERFORMANCE RULES (from flutter.dev/perf):
 ### [3.35.4](https://github.com/flutter/flutter/releases/tag/3.35.4)
 - [flutter/173474](https://github.com/flutter/flutter/issues/173474) - On all platforms PlatformDispatchers.instance.engineId no longer returns null after hot restart.
 - [flutter/174513](https://github.com/flutter/flutter/issues/17451
-  ...(more fixes not shown)
-
-─── Flutter 3.32 ───────────────────────────
-## Flutter 3.32 Changes
-
-### [3.32.8](https://github.com/flutter/flutter/releases/tag/3.32.8)
-
-- [flutter/150131](https://github.com/flutter/flutter/issues/150131) iOS users on macOS 15 may see a tool crash if permissions are missing. Can work around by enabling mDNS permissions.
-- [flutter/155294](https://github.com/flutter/flutter/issues/155294) [flutter/169506](https://github.com/flutter/flutter/issues/169506) On android Add a new api for requesting a new surface from the embedder that is different from any previously returned.
-- [flutter/172602](https://github.com/flutter/flutter/pull/172602)  Do not call hasUnifiedMemory that was introduced in macOS 10.15 on versions before 10.15.
-- [flutter/172250](https://github.com/flutter/flutter/issues/172250) `TextInput.hide` call incorrectly clears the text in the active text field on iOS.
-
-### [3.32.7](https://github.com/flutter/flutter/releases/tag/3.32.7)
-
-- [flutter/172121](https://github.com/flutter/flutter/pull/172121) - Fix iOS images replaced with pink fill when coming out of background.
-
-### [3.32.6](https://github.com/flutter/flutter/releases/tag/3.32.6)
-
-- [flutter/171106](https://github.com/flutter/flutter/pull/171106) - When a scroll view contains a `LayoutBuilder` on any platform, prevent null check crash.
-- [flutter/171239](https://github.com/flutter/flutter/pull/171239) - When using Impeller + Vulkan and transitioning between activities that use Flutter on Android, prevent a crash.
-- [flutter/171737](https://github
   ...(more fixes not shown)
 
 ━━━ FLUTTER TESTING OFFICIAL DOCS ━━━
