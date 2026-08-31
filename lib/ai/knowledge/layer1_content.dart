@@ -130,15 +130,16 @@ PERFORMANCE RULES (from flutter.dev/perf):
 ─── Flutter 3.47 ───────────────────────────
 ## Flutter 3.47 Changes
 
-### [3.47.1](https://github.com/flutter/flutter/releases/tag/3.47.1)
-- [flutter/190871](https://github.com/flutter/flutter/issues/190871) Flutter GPU could not be enabled in release builds on Linux and Windows, since those embedders had no project-level opt-in and release builds ignore engine switches from the environment.
-- [flutter/188446](https://github.com/flutter/flutter/issues/188446) When building multi-target applications in parallel on iOS and macOS, a race condition in SwiftPM integration causes `FileSystemException`.
-- [flutter/189550](https://github.com/flutter/flutter/issues/189550) When running `flutter pub get` in a Dart workspace, platform tooling regeneration and analysis options migration are skipped for packages that do not depend on Flutter.
-- [flutter/190234](https://github.com/flutter/flutter/issues/190234) Avoid crashing with `PathNotFoundException` when cleaning up native assets if files are removed concurrently.
-- [flutter/189128](https://github.com/flutter/flutter/issues/189128) Invalidate `WebEntrypointTarget` and regenerate `web_plugin_registrant.dart` when web plugins are added or removed.
-- [flutter/186445](https://github.com/flutter/flutter/issues/186445) Fix hot restart for WASM web builds.
-- [flutter/190284](https://github.com/flutter/flutter/issues/190284) Fix hot reload failing to reload edits in nested Pub workspace member packages located under root `lib/`.
-- [flutter/191056](https://github.com/flutter/flutter/issu
+### [3.47.2](https://github.com/flutter/flutter/releases/tag/3.47.2)
+- [flutter/191179](https://github.com/flutter/flutter/issues/191179) When WebSocket upgrade fails during DDS startup on web, handle the `DartDevelopmentServiceException` gracefully instead of crashing.
+- [flutter/190518](https://github.com/flutter/flutter/pull/190518) Fix memory leak caused by processing touch events on Linux.
+- [flutter/188265](https://github.com/flutter/flutter/issues/188265) iOS or macOS builds may fail when Swift Package Manager is enabled.
+- [flutter/190846](https://github.com/flutter/flutter/issues/190846) When building an existing native iOS app that's integrated with Flutter using SwiftPM on Xcode 27, it may fail to build Flutter's Swift packages.
+- [flutter/187925](https://github.com/flutter/flutter/issues/187925) On Linux, fix header elements not being announced by screen reader.
+- [flutter/190774](https://github.com/flutter/flutter/issues/190774) When using external textures on Windows, a crash could occur when the engine paints them.
+- [flutter/191177](https://github.com/flutter/flutter/issues/191177) The Flutter tool crashes if a configured custom device ping times out.
+- [flutter/190987](https://github.com/flutter/flutter/issues/190987) Updates `libpng` to fix security vulnerability.
+- [flutter/191060](https://github.com/flutter/flutter/issues/191060) When `analysis_options.yaml` contains flow-style `exclude:` sequences, `AnalysisOptionsMigration` conve
   ...(more fixes not shown)
 
 ─── Flutter 3.44 ───────────────────────────
@@ -602,7 +603,7 @@ substitute `[project]` with your app's directory.
 ## Add a launcher icon
 
 When a new Flutter app is created, it has a default launcher icon.
-To customize this icon
+To learn about customi
 ...(truncated)
 
 ━━━ NETWORKING & ASYNC COOKBOOK ━━━
