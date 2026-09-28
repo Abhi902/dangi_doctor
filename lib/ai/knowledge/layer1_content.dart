@@ -146,6 +146,13 @@ PERFORMANCE RULES (from flutter.dev/perf):
 ─── Flutter 3.44 ───────────────────────────
 ## Flutter 3.44 Changes
 
+### [3.44.9](https://github.com/flutter/flutter/releases/tag/3.44.9)
+- [flutter/186366](https://github.com/flutter/flutter/issues/186366) When debugging an iOS app, if the app crashes, the Flutter CLI and tests that crash will hang.
+
+### [3.44.8](https://github.com/flutter/flutter/releases/tag/3.44.8)
+- [flutter/188346](https://github.com/flutter/flutter/issues/188346) When building on macOS or iOS using the Xcode 27 toolchain, the build will fail due to a lipo verification error.
+- [flutter/184286](https://github.com/flutter/flutter/issues/184286) On some devices with vendor-modified Android 11 ROMs, `AccessibilityBridge.java` field fails to resolve.
+
 ### [3.44.7](https://github.com/flutter/flutter/releases/tag/3.44.7)
 - [flutter/188161](https://github.com/flutter/flutter/issues/188161) Fixes a resource leak that sometimes caused crashes when using external textures on some GPUs (such as Arm Mali).
 
@@ -154,9 +161,7 @@ PERFORMANCE RULES (from flutter.dev/perf):
 - [flutter/188805](https://github.com/flutter/flutter/issues/188805) Fixes a crash when running Android instrumented tests.
 
 ### [3.44.5](https://github.com/flutter/flutter/releases/tag/3.44.5)
-- [flutter/188718](https://github.com/flutter/flutter/issues/188718) When building Flutter Android apps and add-to-app modules using AGP < 9 with KGP, the tool incorrectly logs Built-in Kotlin migration warnings.
-- [flutter/186810](https://github.com/flutter/flutter/issues/186810) [flutter/187388](https://github.com/flutter/flutter/issues/187388) [flutter/187553](https://github.com/flutter/flutter/issues/187553) When building Android app bundles using flavors, or with an old app template combined with a plugin coming alphabetically before app, fixes problems with failing to include libapp.so in the produced app bundle.
-- [flutter/188035](https://github.com/flutter/flutter/issues/188035) When rendering text with shadows, the shadows would appe
+- [flutter/188718](https://github.com/flutter/flutter/issues/188718) When building Flutter 
   ...(more fixes not shown)
 
 ─── Flutter 3.41 ───────────────────────────
