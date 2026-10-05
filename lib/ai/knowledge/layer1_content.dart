@@ -130,17 +130,19 @@ PERFORMANCE RULES (from flutter.dev/perf):
 ─── Flutter 3.47 ───────────────────────────
 ## Flutter 3.47 Changes
 
-### [3.47.3](https://github.com/flutter/flutter/releases/tag/3.47.3)
-- [flutter/191045](https://github.com/flutter/flutter/issues/191045) When calling Actions.handler on all platforms, null was always returned.
-- [flutter/181315](https://github.com/flutter/flutter/issues/181315) When using Impeller on Android devices with B-Series PowerVR GPUs, visual oddities and performance drops can be experienced.
-- [flutter/191176](https://github.com/flutter/flutter/issues/191176) When building for macOS or iOS on machines with missing or incomplete Xcode installations, flutter_tools displays an actionable error message instead of crashing with an unhandled ProcessException.
-- [flutter/191487](https://github.com/flutter/flutter/issues/191487) When using Android SDK Command-line Tools 23.0+ for Android, flutter doctor incorrectly reports "Android license status unknown".
+### [3.47.6](https://github.com/flutter/flutter/releases/tag/3.47.6)
+- [flutter/192513](https://github.com/flutter/flutter/issues/192513) Fixed an issue that caused Windows production apps to hang.
 
-### [3.47.2](https://github.com/flutter/flutter/releases/tag/3.47.2)
-- [flutter/191179](https://github.com/flutter/flutter/issues/191179) When WebSocket upgrade fails during DDS startup on web, handle the `DartDevelopmentServiceException` gracefully instead of crashing.
-- [flutter/190518](https://github.com/flutter/flutter/pull/190518) Fix memory leak caused by processing touch events on Linux.
-- [flutter/188265](https://github.com/flutter/flutter/issues/188265) iOS or macOS builds may fail when Swift Package Manager is enabled.
-- [flutter/190846](https://github.com/flutter/flutter/issues/190846)
+### [3.47.5](https://github.com/flutter/flutter/releases/tag/3.47.5)
+- [flutter/190307](https://github.com/flutter/flutter/issues/190307) When debugging on physical iOS 27 devices, app occasionally crashes.
+- [flutter/191242](https://github.com/flutter/flutter/issues/191242) When re-expanding a preview group in the Widget Previewer, previews crash due to a type error in scroll restoration.
+- [flutter/189507](https://github.com/flutter/flutter/pull/189507) When Dart Development Service encounters a startup failure, flutter_tools crashes with an unhandled FormatException.
+
+### [3.47.4](https://github.com/flutter/flutter/releases/tag/3.47.4)
+- [flutter/191899](https://github.com/flutter/flutter/issues/191899) When Windows Smart App Control or security policies block binary execution on Windows, gracefully handle the error with an actionable message instead of crashing.
+- [flutter/192120](https://github.com/flutter/flutter/pull/192120) Fixes missing preview reload timing analytics in LspPreviewDetector across all platforms.
+- [flutter/181560](https://github.com/flutter/flutter/issues/181560) When building iOS and macOS app, SwiftPM migration warnings and errors are not tracked in analytics.
+- [flutter/191964](https://github.com/flutter/flutter/pull/191964) On 
   ...(more fixes not shown)
 
 ─── Flutter 3.44 ───────────────────────────
