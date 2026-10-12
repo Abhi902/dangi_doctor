@@ -130,6 +130,10 @@ PERFORMANCE RULES (from flutter.dev/perf):
 ─── Flutter 3.47 ───────────────────────────
 ## Flutter 3.47 Changes
 
+### [3.47.7](https://github.com/flutter/flutter/releases/tag/3.47.7)
+- [flutter/182604](https://github.com/flutter/flutter/issues/182604) When an OverlayPortal is displayed on iOS, accessibility frames are shrunk by the device pixel ratio and anchored to the top-left, so VoiceOver focus and XCUITest taps miss the visible controls.
+- [flutter/100946](https://github.com/flutter/flutter/issues/100946) When using VoiceOver on iOS with a ReorderableListView, Semantics focus is incorrectly shifted to the top left of the screen.
+
 ### [3.47.6](https://github.com/flutter/flutter/releases/tag/3.47.6)
 - [flutter/192513](https://github.com/flutter/flutter/issues/192513) Fixed an issue that caused Windows production apps to hang.
 
@@ -139,10 +143,7 @@ PERFORMANCE RULES (from flutter.dev/perf):
 - [flutter/189507](https://github.com/flutter/flutter/pull/189507) When Dart Development Service encounters a startup failure, flutter_tools crashes with an unhandled FormatException.
 
 ### [3.47.4](https://github.com/flutter/flutter/releases/tag/3.47.4)
-- [flutter/191899](https://github.com/flutter/flutter/issues/191899) When Windows Smart App Control or security policies block binary execution on Windows, gracefully handle the error with an actionable message instead of crashing.
-- [flutter/192120](https://github.com/flutter/flutter/pull/192120) Fixes missing preview reload timing analytics in LspPreviewDetector across all platforms.
-- [flutter/181560](https://github.com/flutter/flutter/issues/181560) When building iOS and macOS app, SwiftPM migration warnings and errors are not tracked in analytics.
-- [flutter/191964](https://github.com/flutter/flutter/pull/191964) On 
+- [flutter/191899](https://github.com/flutter/flutter/issues/191899) When Windows Smart App Control 
   ...(more fixes not shown)
 
 ─── Flutter 3.44 ───────────────────────────
